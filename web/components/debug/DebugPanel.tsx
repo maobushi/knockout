@@ -1,12 +1,14 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useControlsStore } from "@/lib/controlsStore";
 import type { Direction, EventMessage } from "@/types/events";
+import { getSocket } from "@/lib/socket-client";
 
 const DIRS: Direction[] = ["N", "E", "S", "W"];
 
 export default function DebugPanel() {
   const [open, setOpen] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
   const {
     lineWidth, setLineWidth,
     danmakuSpeed, setDanmakuSpeed,
@@ -23,7 +25,31 @@ export default function DebugPanel() {
   const [text, setText] = useState("押忍");
   const [color, setColor] = useState("#ff3b30");
 
+  useEffect(() => {
+    const socket = getSocket();
+    setWsConnected(socket.connected);
+    const onConnect = () => setWsConnected(true);
+    const onDisconnect = () => setWsConnected(false);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+    };
+  }, []);
+
   const sendSample = async () => {
+    const socket = getSocket();
+    if (!socket.connected) {
+      // 接続を待ってから送信（最大1.5秒）
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 1500);
+        socket.once("connect", () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
     const payload: EventMessage = {
       seat: { dir, row, col },
       text,
@@ -52,6 +78,9 @@ export default function DebugPanel() {
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <strong>Debug</strong>
+        <span style={{ fontSize: 11, color: wsConnected ? "#4ade80" : "#fca5a5" }}>
+          {wsConnected ? "WS: connected" : "WS: connecting..."}
+        </span>
         <button onClick={() => setOpen((v) => !v)} style={{ background: "#222", color: "#fff", border: "1px solid #555", borderRadius: 4, padding: "4px 8px", cursor: "pointer" }}>
           {open ? "hide" : "show"}
         </button>
@@ -94,7 +123,7 @@ export default function DebugPanel() {
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
               <label>color</label>
               <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
-              <button onClick={sendSample} style={{ marginLeft: "auto", background: "#2b6", color: "#fff", border: "1px solid #1a4", borderRadius: 4, padding: "4px 8px", cursor: "pointer" }}>
+              <button onClick={sendSample} disabled={!wsConnected} style={{ marginLeft: "auto", opacity: wsConnected ? 1 : 0.6, background: "#2b6", color: "#fff", border: "1px solid #1a4", borderRadius: 4, padding: "4px 8px", cursor: wsConnected ? "pointer" : "not-allowed" }}>
                 POST /api/events
               </button>
             </div>
