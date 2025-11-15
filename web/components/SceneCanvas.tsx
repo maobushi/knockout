@@ -11,15 +11,11 @@ import { seatToSeatAddresses, teamToColor } from "@/lib/sui-utils";
 import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
 import { CONTRACT_CONFIG } from "@/lib/contract";
 import type { EventMessage } from "@/types/events";
+import { useDanmakuEventStore } from "@/lib/danmakuEventStore";
 
 export default function SceneCanvas() {
   const highlightSeat = useSeatHighlightStore((s) => s.highlightSeat);
-
-  // WebSocketサーバーを初期化
-  useEffect(() => {
-    // WebSocketサーバーを初期化（一度だけ実行）
-    fetch("/api/socket").catch(() => {});
-  }, []);
+  const addEvent = useDanmakuEventStore((s) => s.addEvent);
 
   // フロントエンドから直接Suiクライアントでカウンターオブジェクトを取得
   useEffect(() => {
@@ -137,7 +133,6 @@ export default function SceneCanvas() {
               }
 
               // 文字のビーム（DanmakuLayer）を発生させる
-              // WebSocket経由でイベントを送信
               const eventMessage: EventMessage = {
                 seat: seatAddress,
                 text: `Team ${team} - Seat ${seat}`,
@@ -148,16 +143,8 @@ export default function SceneCanvas() {
               };
 
               // 文字のビーム（DanmakuLayer）を発生させる
-              // WebSocket経由でイベントを送信（/api/events が emitEvent を呼び出す）
-              fetch("/api/events", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(eventMessage),
-              }).catch((err) => {
-                console.warn(`[カウンター監視] イベント送信エラー:`, err);
-              });
+              // Zustandストアに直接イベントを追加（WebSocket不要）
+              addEvent(eventMessage);
             }
 
             console.log(`[カウンター監視] 最大エフェクト発生: seat=${seat}, team=${team}, counterId=${counterId}, ${seatAddresses.length}個の椅子`);
