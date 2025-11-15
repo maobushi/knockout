@@ -5,6 +5,7 @@ import { CameraRig } from "@/components/CameraRig";
 import { Ring } from "@/components/Ring";
 import { Stands } from "@/components/Stands";
 import { DanmakuLayer } from "@/components/danmaku/DanmakuLayer";
+import AfterimageEffect from "@/components/AfterimageEffect";
 
 export default function SceneCanvas() {
   return (
@@ -12,14 +13,14 @@ export default function SceneCanvas() {
       style={{
         position: "fixed",
         inset: 0,
-        background: "#000"
+        background: "#0C0403"
       }}
     >
       <Canvas
         dpr={[1, 2]}
         gl={{ antialias: true }}
         onCreated={({ gl, scene }) => {
-          gl.setClearColor("#000", 1);
+          gl.setClearColor("#0C0403", 1);
           scene.matrixAutoUpdate = true;
         }}
       >
@@ -30,6 +31,7 @@ export default function SceneCanvas() {
           <Ring />
           <Stands />
           <DanmakuLayer />
+          <AfterimageEffect />
         </Suspense>
       </Canvas>
     </div>

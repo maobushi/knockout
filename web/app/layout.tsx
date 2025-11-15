@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import TransactionHistory from "@/components/TransactionHistory";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,11 +24,32 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body
+        suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <div className="fixed left-6 top-[10%] z-[9999] pointer-events-none select-none text-white drop-shadow-[0_0_8px_rgba(0,0,0,0.3)] [font-family:'DIN RegularAlternate',Arial,Helvetica,sans-serif] text-[clamp(48px,12vw,50px)] tracking-[0.02em] leading-none">
+          <div className="flex flex-col gap-6 items-start">
+            <div>
+              ONE Championship 173
+              <br />
+              SUPPACHAI Muensang <br />
+              vs MASAAKI Noiri
+              <div className="text-white/50 text-xs md:text-sm">
+                November 22, 2025
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="h-[2px] w-[clamp(320px,50vw,720px)] bg-white animate-[ko-blink_2s_steps(4,start)_infinite] drop-shadow-[0_0_8px_rgba(255,255,255,0.35)]"></div>
+              <div className="text-white/80 text-xs md:text-sm">
+                Knockout Arena Visualization
+              </div>
+            </div>
+            <TransactionHistory />
+          </div>
+        </div>
       </body>
     </html>
   );
