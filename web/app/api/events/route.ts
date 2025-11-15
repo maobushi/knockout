@@ -19,9 +19,13 @@ export async function POST(req: Request) {
     ) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
     }
+    
+    // イベントを送信（WebSocketサーバーは /api/socket で初期化される）
     emitEvent(body);
+    
     return NextResponse.json({ ok: true });
-  } catch {
+  } catch (error) {
+    console.error("[api/events] エラー:", error);
     return NextResponse.json({ error: "Bad Request" }, { status: 400 });
   }
 }
