@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, use, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useWallet } from "@suiet/wallet-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -14,8 +15,91 @@ declare global {
   }
 }
 
+// TapUIコンポーネント
+function TapUI({
+  counterId,
+  sessionAddress,
+  packageId,
+  onIncrement,
+  vibratePattern1,
+}: {
+  counterId: string;
+  sessionAddress: string;
+  packageId: string;
+  onIncrement: (counterId: string, sessionAddress: string, packageId: string) => Promise<void>;
+  vibratePattern1: () => void;
+}) {
+  const [isRed, setIsRed] = useState(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const onTap = useCallback(() => {
+    vibratePattern1();
+    setIsRed(true);
+    
+    // 既存のタイマーをクリア
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    
+    // 新しいタイマーを設定
+    timeoutRef.current = setTimeout(() => {
+      setIsRed(false);
+      timeoutRef.current = null;
+    }, 600);
+    
+    // APIを呼び出し
+    void onIncrement(counterId, sessionAddress, packageId);
+  }, [counterId, sessionAddress, packageId, onIncrement, vibratePattern1]);
+
+  // クリーンアップ
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      className={`flex min-h-screen items-center justify-center font-sans ${
+        isRed ? "bg-red-600" : "bg-black"
+      }`}
+      style={{
+        transition: isRed 
+          ? 'background-color 0ms cubic-bezier(1, 0, 0, 1)' 
+          : 'background-color 1000ms cubic-bezier(0.05, 0, 0.05, 1)',
+      }}
+      onClick={onTap}
+      onTouchStart={onTap}
+      role="button"
+      aria-label="tap-area"
+      tabIndex={0}
+    >
+      <div className="flex min-h-screen w-full flex-col items-center justify-center">
+        <div className="text-center">
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="h-40 w-40 rounded-full border-4 border-white/10 animate-pulse"></div>
+              <div className="absolute h-48 w-48 rounded-full border-2 border-white/5 animate-pulse" style={{ animationDelay: "0.5s" }}></div>
+            </div>
+            <div className="relative z-10">
+              <div className={`text-9xl font-black text-white tracking-tighter drop-shadow-2xl transition-all duration-300 ${
+                isRed ? "scale-110 text-red-50" : "scale-100"
+              }`}>
+                TAP
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SessionPage({ params }: { params: Promise<{ packageId: string }> }) {
   const { packageId } = use(params);
+  const router = useRouter();
   const wallet = useWallet();
   const connected = !!wallet?.connected;
   const [sessionKeypair, setSessionKeypair] = useState<Ed25519Keypair | null>(null);
@@ -103,8 +187,8 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
         arguments: [tx.pure.address(sessionAddress)],
       });
 
-      // 同一トランザクション内でセッションキーへガスを少額転送（0.01 SUI）
-      const [coin] = tx.splitCoins(tx.gas, [10_000_000]); // 10_000_000 MIST = 0.01 SUI
+      // 同一トランザクション内でセッションキーへガスを少額転送（0.1 SUI）
+      const [coin] = tx.splitCoins(tx.gas, [100_000_000]); // 100_000_000 MIST = 0.1 SUI
       tx.transferObjects([coin], sessionAddress);
 
       const result = await wallet.signAndExecuteTransactionBlock({
@@ -263,59 +347,39 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
   }, [triggerHaptic]);
 
   // カウントアップ（セッションキーで署名）- API経由で実行（連打可能）
-  const increment = async () => {
-    if (!sessionAddress) {
-      setError("セッションキーが生成されていません");
-      return;
-    }
-
-    if (!counterId) {
-      setError("レジストリとカウンターを作成してください");
-      return;
-    }
-
-    // 振動をトリガー
-    vibratePattern1();
-
+  const increment = async (counterIdToUse: string, sessionAddressToUse: string, packageIdToUse: string) => {
     // 連打可能にするため、ローディング状態は設定せず、非同期で処理
-    (async () => {
-      try {
-        // APIエンドポイントを呼び出してセッションキーで署名
-        const response = await fetch("/api/increment", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            counterId,
-            sessionAddress,
-            packageId,
-          }),
-        });
+    try {
+      // APIエンドポイントを呼び出してセッションキーで署名
+      const response = await fetch("/api/increment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          counterId: counterIdToUse,
+          sessionAddress: sessionAddressToUse,
+          packageId: packageIdToUse,
+        }),
+      });
 
-        const data = await response.json();
+      const data = await response.json();
 
-        if (!response.ok) {
-          throw new Error(data.error || "カウントアップに失敗しました");
-        }
-
-        console.log("カウントアップ成功:", data);
-        
-        // カウンターの状態を更新（少し遅延させて確実に反映）
-        setTimeout(async () => {
-          await fetchCounter(counterId);
-        }, 500);
-      } catch (err: any) {
-        console.error("カウントアップ処理エラー:", err);
-        const errorMessage = err.message || err.error || "トランザクションの実行に失敗しました";
-        // エラーは表示するが、連打を妨げない
-        if (errorMessage.includes("Object") && errorMessage.includes("locked")) {
-          setError("オブジェクトロックで失敗しました。少し待って再度お試しください。");
-        } else {
-          setError(`カウントアップエラー: ${errorMessage}`);
-        }
+      if (!response.ok) {
+        throw new Error(data.error || "カウントアップに失敗しました");
       }
-    })();
+
+      console.log("カウントアップ成功:", data);
+    } catch (err: any) {
+      console.error("カウントアップ処理エラー:", err);
+      // エラーは表示するが、連打を妨げない
+      const errorMessage = err.message || err.error || "トランザクションの実行に失敗しました";
+      if (errorMessage.includes("Object") && errorMessage.includes("locked")) {
+        setError("オブジェクトロックで失敗しました。少し待って再度お試しください。");
+      } else {
+        setError(`カウントアップエラー: ${errorMessage}`);
+      }
+    }
   };
 
   // レジストリからカウンターIDを取得（完全オンチェーンデータベース）
@@ -577,111 +641,132 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
     }
   }, [counterId]);
 
+  // レジストリとカウンターが作成されたら、tap UIを全画面表示
+  if (registryId && counterId && sessionAddress) {
+    return (
+      <TapUI
+        counterId={counterId}
+        sessionAddress={sessionAddress}
+        packageId={packageId}
+        onIncrement={increment}
+        vibratePattern1={vibratePattern1}
+      />
+    );
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center gap-8 py-10 px-6 bg-white dark:bg-black">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-zinc-900 to-black font-sans">
+      <main className="flex min-h-screen w-full max-w-4xl flex-col items-center justify-center gap-12 py-10 px-6">
         {/* ウォレット接続ボタン */}
-        <div className="w-full flex justify-center">
-          <SuietConnectButton />
-        </div>
+        {!connected && (
+          <div className="w-full flex justify-center mb-8">
+            <SuietConnectButton />
+          </div>
+        )}
 
         {/* ネットワーク確認メッセージ */}
         {connected && wallet?.chain?.name && 
          !wallet.chain.name.toLowerCase().includes("testnet") && 
          wallet.chain.name.toLowerCase() !== "testnet" && (
-          <div className="w-full rounded-lg bg-yellow-50 border border-yellow-200 p-4 text-yellow-700 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-400">
-            <p className="mb-2">
-              ⚠️ 警告: ウォレットは <strong>{wallet.chain.name}</strong> に接続されていますが、
-              コントラクトは <strong>testnet</strong> にデプロイされています。
+          <div className="w-full rounded-xl bg-yellow-500/10 border border-yellow-500/30 p-6 text-yellow-400 backdrop-blur-sm">
+            <p className="mb-2 text-lg font-semibold">
+              ⚠️ Warning: Wallet connected to <strong>{wallet.chain.name}</strong>
             </p>
-            <p className="text-sm">
-              ウォレットを <strong>testnet</strong> に切り替えてください。
+            <p className="text-sm text-yellow-300/80">
+              Please switch to <strong>testnet</strong> to interact with the contract.
             </p>
           </div>
         )}
 
         {/* エラー表示 */}
         {error && (
-          <div className="w-full rounded-lg bg-red-50 border border-red-200 p-4 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400">
-            {error}
+          <div className="w-full rounded-xl bg-red-500/10 border border-red-500/30 p-6 text-red-400 backdrop-blur-sm animate-pulse">
+            <p className="text-lg font-semibold">{error}</p>
           </div>
         )}
 
         {/* 成功表示 */}
         {success && (
-          <div className="w-full rounded-lg bg-green-50 border border-green-200 p-4 text-green-700 dark:bg-green-900/20 dark:border-green-800 dark:text-green-400">
-            {success}
+          <div className="w-full rounded-xl bg-green-500/10 border border-green-500/30 p-6 text-green-400 backdrop-blur-sm">
+            <p className="text-lg font-semibold">{success}</p>
           </div>
         )}
 
-        {/* セッションキーセクション */}
-        <div className="w-full space-y-4">
-          {/* レジストリセクション */}
-          <div className="rounded-lg border border-black/[.12] p-4 dark:border-white/[.2]">
-            <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">
-              1. レジストリ作成（メインウォレットで署名）
-            </h2>
-            {registryId ? (
-              <div className="space-y-1 mb-2">
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                  レジストリID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{registryId}</code>
+        {/* メインコンテンツ */}
+        <div className="w-full max-w-2xl">
+          {/* レジストリ作成セクション */}
+          <div className="relative rounded-2xl border border-white/10 bg-gradient-to-br from-zinc-900/50 to-black/50 p-8 backdrop-blur-xl shadow-2xl overflow-hidden">
+            {/* 背景エフェクト */}
+            <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-pink-500/5"></div>
+            <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
+            <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
+            
+            <div className="relative z-10">
+              <div className="text-center mb-8">
+                <h1 className="text-4xl md:text-5xl font-black text-white mb-4 tracking-tight">
+                  CREATE REGISTRY
+                </h1>
+                <p className="text-zinc-400 text-sm md:text-base max-w-md mx-auto leading-relaxed">
+                  Sign with your main wallet to create a registry and counter on-chain. This will enable tap-to-increment functionality.
                 </p>
-                {counterId && (
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    カウンターID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{counterId}</code>
+              </div>
+
+              <div className="flex flex-col items-center gap-6">
+                <button
+                  onClick={() => {
+                    console.log("レジストリ作成ボタンがクリックされました");
+                    createRegistry();
+                  }}
+                  disabled={loading || !sessionAddress}
+                  className="relative group w-full max-w-md flex h-16 items-center justify-center rounded-full bg-gradient-to-r from-blue-600 to-purple-600 px-8 text-white font-bold text-lg transition-all hover:from-blue-500 hover:to-purple-500 hover:scale-105 hover:shadow-2xl hover:shadow-purple-500/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none overflow-hidden"
+                >
+                  <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/20 to-white/0 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-1000"></span>
+                  <span className="relative z-10 flex items-center gap-3">
+                    {loading ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>CREATING...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span>CREATE REGISTRY & COUNTER</span>
+                      </>
+                    )}
+                  </span>
+                </button>
+
+                {!sessionAddress && (
+                  <p className="text-xs text-zinc-500 text-center">
+                    Session key not found. Please wait...
                   </p>
                 )}
               </div>
-            ) : null}
-            <button
-              onClick={() => {
-                console.log("レジストリ作成ボタンがクリックされました");
-                createRegistry();
-              }}
-              disabled={loading || !sessionAddress}
-              className="flex h-10 items-center justify-center rounded-full bg-green-500 px-4 text-white transition-colors hover:bg-green-600 disabled:opacity-50"
-            >
-              {loading
-                ? "作成中..."
-                : registryId
-                ? "レジストリを再作成"
-                : "レジストリとカウンターを作成"}
-            </button>
-            {/* デバッグ情報 */}
-            {(!sessionAddress) && (
-              <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-2">
-                ボタンが無効な理由: セッションキーなし
-              </p>
-            )}
-          </div>
 
-          {/* ガス送金セクションは不要（メインウォレットでガスを支払う運用に変更） */}
-
-          {/* カウントアップセクション */}
-          <div className="rounded-lg border border-black/[.12] p-4 dark:border-white/[.2]">
-            <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">
-              2. カウントアップ（セッションキーで署名）
-            </h2>
-            <div className="space-y-4">
-              <div className="text-center">
-                <p className="text-4xl font-bold text-black dark:text-zinc-50 mb-2">{count}</p>
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">現在のカウント</p>
-              </div>
-              <button
-                onClick={increment}
-                disabled={!sessionAddress || !counterId}
-                className="w-full flex h-12 items-center justify-center rounded-full bg-orange-500 px-4 text-white transition-colors hover:bg-orange-600 disabled:opacity-50 text-lg font-semibold"
-              >
-                カウントアップ
-              </button>
-              {/* デバッグ情報 */}
-              {(!sessionAddress || !counterId) && (
-                <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2 space-y-1">
-                  <p>
-                    ボタンが無効な理由: {!sessionAddress ? "セッションキーなし " : ""} {!counterId ? "カウンターIDなし" : ""}
-                  </p>
+              {/* 説明 */}
+              <div className="mt-8 pt-8 border-t border-white/10">
+                <div className="grid md:grid-cols-2 gap-4 text-sm text-zinc-400">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 font-bold">1</div>
+                    <div>
+                      <p className="font-semibold text-zinc-300 mb-1">Registry Creation</p>
+                      <p className="text-zinc-500">Creates an on-chain registry to store your counter.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-400 font-bold">2</div>
+                    <div>
+                      <p className="font-semibold text-zinc-300 mb-1">Counter Initialization</p>
+                      <p className="text-zinc-500">Initializes a counter linked to your session key.</p>
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>

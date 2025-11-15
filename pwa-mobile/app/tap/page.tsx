@@ -12,18 +12,12 @@ declare global {
   }
 }
 
-const DEFAULT_BASE = 1.05;
-const LEVERAGE_BASE =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_LEVERAGE_BASE
-    ? Number(process.env.NEXT_PUBLIC_LEVERAGE_BASE)
-    : DEFAULT_BASE;
-
 function TapPageContent() {
   const router = useRouter();
   const params = useSearchParams();
   const wallet = useWallet();
   const connected = !!wallet?.connected;
-  const [taps, setTaps] = useState(0);
+  const [isRed, setIsRed] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const { triggerHaptic } = useHaptic();
 
@@ -113,39 +107,45 @@ function TapPageContent() {
   }, [triggerHaptic]);
 
   const onTap = useCallback(() => {
-    setTaps((t) => t + 1);
     vibratePattern1();
-  }, []);
-
-  const multiplier = useMemo(() => {
-    const base = Number.isFinite(LEVERAGE_BASE) ? LEVERAGE_BASE : DEFAULT_BASE;
-    return Math.pow(base, taps);
-  }, [taps]);
+    setIsRed(true);
+    setTimeout(() => {
+      setIsRed(false);
+    }, 600);
+  }, [vibratePattern1]);
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black"
+      className={`flex min-h-screen items-center justify-center font-sans ${
+        isRed ? "bg-red-600" : "bg-black"
+      }`}
+      style={{
+        transition: isRed 
+          ? 'background-color 0ms cubic-bezier(1, 0, 0, 1)' 
+          : 'background-color 1000ms cubic-bezier(0.05, 0, 0.05, 1)',
+      }}
       onClick={onTap}
       onTouchStart={onTap}
       role="button"
       aria-label="tap-area"
       tabIndex={0}
     >
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-center gap-8 py-10 px-6 bg-white dark:bg-black">
+      <main className="flex min-h-screen w-full flex-col items-center justify-center">
         <div className="text-center">
-          <div className="text-sm text-zinc-600 dark:text-zinc-400">
-            Seat: {seat ?? "-"} | Team: {team ?? "-"}
-          </div>
-          <h1 className="mt-4 text-6xl font-bold text-black dark:text-zinc-50">
-            {multiplier.toFixed(3)}x
-          </h1>
-          <div className="mt-2 text-lg text-zinc-700 dark:text-zinc-300">
-            taps: {taps}
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="h-40 w-40 rounded-full border-4 border-white/10 animate-pulse"></div>
+              <div className="absolute h-48 w-48 rounded-full border-2 border-white/5 animate-pulse" style={{ animationDelay: "0.5s" }}></div>
+            </div>
+            <div className="relative z-10">
+              <div className={`text-9xl font-black text-white tracking-tighter drop-shadow-2xl transition-all duration-300 ${
+                isRed ? "scale-110 text-red-50" : "scale-100"
+              }`}>
+                TAP
+              </div>
+            </div>
           </div>
         </div>
-        <p className="mt-6 text-center text-zinc-600 dark:text-zinc-400">
-          画面のどこでもタップすると倍率が上昇します（対応端末では振動）
-        </p>
       </main>
     </div>
   );
