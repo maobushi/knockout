@@ -1,11 +1,12 @@
-import { SuiClient, getFullnodeUrl } from '@mysten/sui.js/client';
+import { SuiClient } from '@mysten/sui.js/client';
 
-// Sui TestnetのRPC URL
-const TESTNET_RPC_URL = getFullnodeUrl('testnet');
+// Sui TestnetのRPC URL（HTTP RPCエンドポイントを明示的に指定）
+// JSON RPCのみを使用（ポーリングベース）
+const TESTNET_RPC_URL = 'https://fullnode.testnet.sui.io:443';
 
 // Suiクライアントのインスタンスを作成
-// subscribeEventは内部でWebSocketを使用しますが、ブラウザ環境では
-// RPC URLから自動的にWebSocket URLを推測します
+// TestnetのHTTP RPCエンドポイントを明示的に指定
+// 注意: すべての監視機能はJSON RPCポーリングベースで実装されています
 export const suiClient = new SuiClient({
   url: TESTNET_RPC_URL,
 });
@@ -29,6 +30,10 @@ export interface CounterObject {
 
 // 既知のカウンターオブジェクトID（ローカルストレージから取得）
 const STORAGE_KEY = 'knockout_counters';
+const LAST_EVENT_CURSOR_KEY = 'knockout_last_event_cursor';
+const LAST_INCREMENT_EVENT_CURSOR_KEY = 'knockout_last_increment_event_cursor';
+const REGISTRY_POLL_INTERVAL_MS = 15000;
+const COUNTER_EVENT_POLL_INTERVAL_MS = 12000;
 
 // ローカルストレージからカウンターIDのリストを取得
 export function getStoredCounterIds(): string[] {
@@ -55,9 +60,6 @@ export function saveCounterId(objectId: string) {
   }
 }
 
-// 最後にチェックしたカーソル位置を保存するキー
-const LAST_EVENT_CURSOR_KEY = 'knockout_last_event_cursor';
-
 // 最後にチェックしたカーソル位置を取得
 function getLastEventCursor(): string | null {
   if (typeof window === 'undefined') return null;
@@ -79,6 +81,28 @@ function saveLastEventCursor(cursor: string | null) {
     }
   } catch (error) {
     console.error('Error saving last event cursor:', error);
+  }
+}
+
+function getLastIncrementEventCursor(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(LAST_INCREMENT_EVENT_CURSOR_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastIncrementEventCursor(cursor: string | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (cursor) {
+      localStorage.setItem(LAST_INCREMENT_EVENT_CURSOR_KEY, cursor);
+    } else {
+      localStorage.removeItem(LAST_INCREMENT_EVENT_CURSOR_KEY);
+    }
+  } catch (error) {
+    console.error('Error saving last increment event cursor:', error);
   }
 }
 
@@ -127,6 +151,50 @@ export async function getNewCounterEvents(): Promise<string[]> {
     return counterIds;
   } catch (error) {
     console.error('Error fetching new counter events:', error);
+    return [];
+  }
+}
+
+export async function getNewCounterIncrementEvents(): Promise<string[]> {
+  try {
+    const counterIds: string[] = [];
+    const lastCursor = getLastIncrementEventCursor();
+
+    const events = await suiClient.queryEvents({
+      query: {
+        MoveEventType: `${PACKAGE_ID}::knockout_contract::CounterIncremented`,
+      },
+      limit: 100,
+      order: 'ascending',
+      cursor: lastCursor || undefined,
+    });
+
+    for (const event of events.data) {
+      if (event.type === `${PACKAGE_ID}::knockout_contract::CounterIncremented`) {
+        const parsedJson = event.parsedJson as { counter_id?: string };
+        if (parsedJson.counter_id) {
+          counterIds.push(parsedJson.counter_id);
+        }
+      }
+    }
+
+    if (events.nextCursor) {
+      saveLastIncrementEventCursor(events.nextCursor);
+    } else if (events.data.length > 0) {
+      const lastEvent = events.data[events.data.length - 1];
+      if (lastEvent.id) {
+        const cursorString = `${lastEvent.id.txDigest}_${lastEvent.id.eventSeq}`;
+        saveLastIncrementEventCursor(cursorString);
+      }
+    }
+
+    if (counterIds.length > 0) {
+      console.log(`Found ${counterIds.length} new counter increment events`);
+    }
+
+    return counterIds;
+  } catch (error) {
+    console.error('Error fetching counter increment events:', error);
     return [];
   }
 }
@@ -206,11 +274,11 @@ export async function getCounterIdsFromRegistry(registryId: string): Promise<str
           console.log(`Field content:`, fieldContent);
           
           if ('fields' in fieldContent) {
-            const fieldFields = fieldContent.fields as any;
+            const fieldFields = fieldContent.fields as Record<string, unknown>;
             console.log(`Field fields:`, fieldFields);
             
             // valueフィールドからIDを取得
-            if (fieldFields.value) {
+            if ('value' in fieldFields && fieldFields.value) {
               const idValue = fieldFields.value;
               console.log(`ID value:`, idValue, typeof idValue);
               
@@ -366,144 +434,156 @@ export async function checkForNewCounters(existingIds: Set<string>): Promise<str
   }
 }
 
-// gRPCストリーミングでレジストリオブジェクトの変更を監視
+// JSON RPCポーリングでレジストリオブジェクトの変更を監視
 export function subscribeToRegistryChanges(
   registryId: string,
   onRegistryChanged: () => void
 ): () => void {
-  let unsubscribe: (() => void) | null = null;
-  let isSubscribed = false;
+  let pollingTimer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+  let hasTriggeredInitialRefresh = false;
+  let lastRegistryVersion: string | null = null;
 
-  const subscribe = async () => {
-    if (isSubscribed) return;
-    isSubscribed = true;
-
-    try {
-      // レジストリオブジェクトに関連するトランザクションを監視
-      // Suiでは、特定のオブジェクトIDを含むトランザクションを監視できる
-      console.log('Setting up gRPC subscription for registry:', registryId);
-      
-      const subscription = await suiClient.subscribeTransaction({
-        filter: {
-          ChangedObject: registryId,
-        },
-        onMessage: (transaction) => {
-          console.log('Registry transaction received via gRPC:', transaction);
-          // レジストリが変更されたことを通知
-          onRegistryChanged();
-        },
-      });
-      
-      console.log('Successfully subscribed to registry changes via gRPC streaming');
-
-      unsubscribe = () => {
-        isSubscribed = false;
-        try {
-          if (subscription && typeof subscription.unsubscribe === 'function') {
-            subscription.unsubscribe();
-          }
-        } catch (error) {
-          console.error('Error unsubscribing from registry:', error);
-        }
-      };
-    } catch (error) {
-      console.error('Error subscribing to registry changes:', error);
-      console.error('Error details:', {
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        registryId,
-      });
-      isSubscribed = false;
-      // フォールバック: ポーリングに戻る
-      console.warn('Registry subscription failed, falling back to polling');
-      throw error; // エラーを再スローして、呼び出し側でフォールバック処理を実行
+  const stopPolling = () => {
+    if (pollingTimer) {
+      clearInterval(pollingTimer);
+      pollingTimer = null;
     }
   };
 
-  subscribe();
+  const triggerInitialRefresh = () => {
+    if (!hasTriggeredInitialRefresh) {
+      hasTriggeredInitialRefresh = true;
+      try {
+        onRegistryChanged();
+      } catch (error) {
+        console.error('Error executing registry change callback:', error);
+      }
+    }
+  };
+
+  const startPolling = () => {
+    if (pollingTimer) return;
+    console.log('Starting JSON RPC polling for registry changes:', registryId);
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const registryObject = await suiClient.getObject({
+          id: registryId,
+          options: {
+            showContent: false,
+            showDisplay: false,
+            showOwner: false,
+            showPreviousTransaction: false,
+            showStorageRebate: false,
+            showType: false,
+          },
+        });
+
+        const currentVersion = registryObject.data?.version ?? null;
+
+        if (!hasTriggeredInitialRefresh) {
+          lastRegistryVersion = currentVersion;
+          triggerInitialRefresh();
+          return;
+        }
+
+        if (currentVersion && currentVersion !== lastRegistryVersion) {
+          console.log('Registry version changed:', {
+            lastVersion: lastRegistryVersion,
+            currentVersion,
+          });
+          lastRegistryVersion = currentVersion;
+          onRegistryChanged();
+        }
+      } catch (error) {
+        console.error('Error polling registry changes:', error);
+        // 初回リフレッシュがまだ実行されていない場合は実行
+        if (!hasTriggeredInitialRefresh) {
+          triggerInitialRefresh();
+        }
+      }
+    };
+
+    // 初回実行
+    poll();
+    // ポーリングを開始
+    pollingTimer = setInterval(poll, REGISTRY_POLL_INTERVAL_MS);
+  };
+
+  // ポーリングを開始
+  startPolling();
 
   return () => {
-    if (unsubscribe) {
-      unsubscribe();
-    }
-    isSubscribed = false;
+    stopped = true;
+    stopPolling();
+    console.log('Stopped polling registry changes');
   };
 }
 
-// gRPCストリーミングでイベントを購読（リアルタイム取得）
+// JSON RPCポーリングでイベントを購読（リアルタイム取得）
 export function subscribeToCounterEvents(
   onCounterCreated: (counterId: string) => void,
   onCounterIncremented: (counterId: string) => void
 ): () => void {
-  let unsubscribe: (() => void) | null = null;
-  let isSubscribed = false;
+  let pollingTimer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
 
-  const subscribe = async () => {
-    if (isSubscribed) return;
-    isSubscribed = true;
-
-    try {
-      // CounterCreatedイベントを購読
-      const createdSubscription = await suiClient.subscribeEvent({
-        filter: {
-          MoveEventType: `${PACKAGE_ID}::knockout_contract::CounterCreated`,
-        },
-        onMessage: (event) => {
-          console.log('CounterCreated event received:', event);
-          try {
-            const parsedJson = event.parsedJson as { counter_id?: string };
-            if (parsedJson.counter_id) {
-              saveCounterId(parsedJson.counter_id);
-              onCounterCreated(parsedJson.counter_id);
-            }
-          } catch (error) {
-            console.error('Error parsing CounterCreated event:', error);
-          }
-        },
-      });
-
-      // CounterIncrementedイベントを購読
-      const incrementedSubscription = await suiClient.subscribeEvent({
-        filter: {
-          MoveEventType: `${PACKAGE_ID}::knockout_contract::CounterIncremented`,
-        },
-        onMessage: (event) => {
-          console.log('CounterIncremented event received:', event);
-          try {
-            const parsedJson = event.parsedJson as { counter_id?: string };
-            if (parsedJson.counter_id) {
-              onCounterIncremented(parsedJson.counter_id);
-            }
-          } catch (error) {
-            console.error('Error parsing CounterIncremented event:', error);
-          }
-        },
-      });
-
-      unsubscribe = () => {
-        isSubscribed = false;
-        try {
-          createdSubscription.unsubscribe();
-          incrementedSubscription.unsubscribe();
-        } catch (error) {
-          console.error('Error unsubscribing:', error);
-        }
-      };
-    } catch (error) {
-      console.error('Error subscribing to events:', error);
-      isSubscribed = false;
-      // フォールバック: ポーリングに戻る
-      console.warn('Event subscription failed, falling back to polling');
+  const stopPolling = () => {
+    if (pollingTimer) {
+      clearInterval(pollingTimer);
+      pollingTimer = null;
     }
   };
 
-  subscribe();
+  const startPolling = () => {
+    if (pollingTimer) return;
+    console.log('Starting JSON RPC polling for counter events');
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const newCounters = await getNewCounterEvents();
+        newCounters.forEach((counterId) => {
+          saveCounterId(counterId);
+          try {
+            onCounterCreated(counterId);
+          } catch (error) {
+            console.error('Error handling polled CounterCreated event:', error);
+          }
+        });
+      } catch (error) {
+        console.error('Error polling counter creation events:', error);
+      }
+
+      try {
+        const incrementedCounters = await getNewCounterIncrementEvents();
+        incrementedCounters.forEach((counterId) => {
+          try {
+            onCounterIncremented(counterId);
+          } catch (error) {
+            console.error('Error handling polled CounterIncremented event:', error);
+          }
+        });
+      } catch (error) {
+        console.error('Error polling counter increment events:', error);
+      }
+    };
+
+    // 初回実行
+    poll();
+    // ポーリングを開始
+    pollingTimer = setInterval(poll, COUNTER_EVENT_POLL_INTERVAL_MS);
+  };
+
+  // ポーリングを開始
+  startPolling();
 
   return () => {
-    if (unsubscribe) {
-      unsubscribe();
-    }
-    isSubscribed = false;
+    stopped = true;
+    stopPolling();
+    console.log('Stopped polling counter events');
   };
 }
 
@@ -534,4 +614,3 @@ export async function getCounterById(objectId: string): Promise<CounterObject | 
     return null;
   }
 }
-
