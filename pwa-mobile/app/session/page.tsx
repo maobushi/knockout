@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@suiet/wallet-kit";
 import { Transaction } from "@mysten/sui/transactions";
@@ -21,6 +21,8 @@ export default function SessionPage() {
   const [counterSessionAddress, setCounterSessionAddress] = useState<string>(""); // レジストリに登録されているセッションアドレス
   const [count, setCount] = useState<number>(0);
   const [loading, setLoading] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState<number>(0); // 実行中のリクエスト数
+  const pendingRequestsRef = useRef<number>(0); // 実行中のリクエスト数（実際の管理用）
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
 
@@ -227,8 +229,8 @@ export default function SessionPage() {
     }
   };
 
-  // カウントアップ（セッションキーで署名）
-  const increment = async () => {
+  // カウントアップ（セッションキーで署名）- 並列処理対応
+  const increment = () => {
     if (!sessionKeypair) {
       setError("セッションキーを生成してください");
       return;
@@ -239,115 +241,127 @@ export default function SessionPage() {
       return;
     }
 
-    setLoading(true);
-    setError("");
-    setSuccess("");
+    // 実行中のリクエスト数を増やす
+    pendingRequestsRef.current += 1;
+    setPendingRequests(pendingRequestsRef.current);
 
-    try {
-      console.log("カウントアップ開始:", { counterId, sessionAddress });
-      
-      // まずカウンターオブジェクトを取得して、session_ownerを確認
-      let expectedSessionOwner: string | null = null;
-      try {
-        const counterObject = await suiClient.getObject({
-          id: counterId,
-          options: { showContent: true },
-        });
-        
-        if (counterObject.data?.content && "fields" in counterObject.data.content) {
-          const fields = counterObject.data.content.fields as any;
-          expectedSessionOwner = fields.session_owner;
-          console.log("カウンターのsession_owner:", expectedSessionOwner);
-          console.log("現在のセッションアドレス:", sessionAddress);
-          
-          if (expectedSessionOwner !== sessionAddress) {
-            // セッションキーが一致しない場合、警告を表示して、カウンターに登録されているセッションキーを使用するように促す
-            setError(
-              `⚠️ セッションキーのアドレスが一致しません。\n` +
-              `レジストリに登録されているセッションキー: ${expectedSessionOwner}\n` +
-              `現在のセッションキー: ${sessionAddress}\n` +
-              `\n解決方法:\n` +
-              `「2. レジストリ作成（再作成）」を実行して、新しいセッションキーを登録してください。`
-            );
-            setLoading(false);
-            return;
-          }
+    // 並列で即座に実行（awaitしない）
+    executeIncrement(counterId, sessionAddress, sessionKeypair)
+      .then(() => {
+        console.log("カウントアップ成功");
+      })
+      .catch((err: any) => {
+        console.error("カウントアップ処理エラー:", err);
+        // ガス不足エラーの場合のみエラーメッセージを表示
+        if (err.message?.includes("No valid gas coins") || err.message?.includes("gas")) {
+          setError(
+            `ガス不足エラー: セッションキーのアドレス（${sessionAddress}）にSUIがありません。\n` +
+            `上記の「セッションキーに0.01 SUIを送金」ボタンを押して、メインウォレットからセッションキーにガスを送金してください。\n` +
+            `（本番環境では、スポンサードトランザクションを実装してください）`
+          );
         }
-      } catch (err) {
-        console.error("カウンターオブジェクトの取得エラー:", err);
-      }
+      })
+      .finally(() => {
+        // 実行中のリクエスト数を減らす
+        pendingRequestsRef.current = Math.max(0, pendingRequestsRef.current - 1);
+        setPendingRequests(pendingRequestsRef.current);
+        
+        // すべてのリクエストが完了したら、カウントを更新
+        if (pendingRequestsRef.current === 0 && counterId) {
+          setTimeout(async () => {
+            await fetchCounter(counterId);
+            console.log("すべてのカウントアップが完了し、カウンター状態を更新しました");
+          }, 1000);
+        }
+      });
+  };
 
-      const tx = new Transaction();
-      
-      // セッションキーのアドレスをsenderとして設定
-      tx.setSender(sessionAddress);
-      
-      tx.moveCall({
-        target: `${CONTRACT_CONFIG.PACKAGE_ID}::knockout_contract::increment`,
-        arguments: [
-          tx.object(counterId), // sharedオブジェクトとして参照
-        ],
-      });
-
-      // 署名者のアドレスを確認
-      const signerAddress = sessionKeypair.getPublicKey().toSuiAddress();
-      console.log("署名開始:", { 
-        signerAddress, 
-        sessionAddress, 
-        match: signerAddress === sessionAddress
+  // 実際のカウントアップ処理を実行
+  const executeIncrement = async (
+    currentCounterId: string,
+    currentSessionAddress: string,
+    currentSessionKeypair: Ed25519Keypair
+  ) => {
+    console.log("カウントアップ実行開始:", { currentCounterId, currentSessionAddress });
+    
+    // まずカウンターオブジェクトを取得して、session_ownerを確認
+    let expectedSessionOwner: string | null = null;
+    try {
+      const counterObject = await suiClient.getObject({
+        id: currentCounterId,
+        options: { showContent: true },
       });
       
-      if (signerAddress !== sessionAddress) {
-        setError(`セッションキーのアドレスが一致しません。署名者: ${signerAddress}, 期待: ${sessionAddress}`);
-        return;
+      if (counterObject.data?.content && "fields" in counterObject.data.content) {
+        const fields = counterObject.data.content.fields as any;
+        expectedSessionOwner = fields.session_owner;
+        console.log("カウンターのsession_owner:", expectedSessionOwner);
+        console.log("現在のセッションアドレス:", currentSessionAddress);
+        
+        if (expectedSessionOwner !== currentSessionAddress) {
+          // セッションキーが一致しない場合、警告を表示
+          setError(
+            `⚠️ セッションキーのアドレスが一致しません。\n` +
+            `レジストリに登録されているセッションキー: ${expectedSessionOwner}\n` +
+            `現在のセッションキー: ${currentSessionAddress}\n` +
+            `\n解決方法:\n` +
+            `「2. レジストリ作成（再作成）」を実行して、新しいセッションキーを登録してください。`
+          );
+          throw new Error("セッションキーのアドレスが一致しません");
+        }
       }
-      
-      // トランザクションに署名して実行
-      // @mysten/suiの新しいAPIでは、Transaction.sign()メソッドを使用
-      // クライアントサイドから秘密鍵で署名することは可能です
-      const signedTransaction = await tx.sign({ signer: sessionKeypair, client: suiClient });
-      
-      console.log("トランザクションに署名しました:", {
-        sender: sessionAddress,
-        signedTransactionType: typeof signedTransaction,
-        hasBytes: 'bytes' in signedTransaction,
-        hasSignature: 'signature' in signedTransaction,
-      });
-      
-      // 署名済みトランザクションを実行
-      // signedTransactionはSignatureWithBytes型で、bytesプロパティを持つ
-      const result = await suiClient.executeTransactionBlock({
-        transactionBlock: signedTransaction.bytes, // bytesプロパティを使用
-        signature: signedTransaction.signature, // signatureプロパティを使用
-        options: {
-          showEffects: true,
-          showObjectChanges: true,
-          showEvents: true,
-        },
-      });
-      
-      console.log("カウントアップトランザクション結果:", result);
-      
-      // カウントを更新（少し待ってから取得）
-      setTimeout(async () => {
-        await fetchCounter(counterId);
-        console.log("カウントアップ後のカウンター状態を取得しました");
-      }, 1000);
-      setSuccess(`カウントアップしました`);
-    } catch (err: any) {
-      // ガス不足エラーの場合、メインウォレットからセッションキーにSUIを送金することを提案
-      if (err.message?.includes("No valid gas coins") || err.message?.includes("gas")) {
-        setError(
-          `ガス不足エラー: セッションキーのアドレス（${sessionAddress}）にSUIがありません。\n` +
-          `上記の「セッションキーに0.01 SUIを送金」ボタンを押して、メインウォレットからセッションキーにガスを送金してください。\n` +
-          `（本番環境では、スポンサードトランザクションを実装してください）`
-        );
-      } else {
-        setError(`カウントアップエラー: ${err.message || err}`);
-      }
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      console.error("カウンターオブジェクトの取得エラー:", err);
+      throw err;
     }
+
+    const tx = new Transaction();
+    
+    // セッションキーのアドレスをsenderとして設定
+    tx.setSender(currentSessionAddress);
+    
+    tx.moveCall({
+      target: `${CONTRACT_CONFIG.PACKAGE_ID}::knockout_contract::increment`,
+      arguments: [
+        tx.object(currentCounterId), // sharedオブジェクトとして参照
+      ],
+    });
+
+    // 署名者のアドレスを確認
+    const signerAddress = currentSessionKeypair.getPublicKey().toSuiAddress();
+    console.log("署名開始:", { 
+      signerAddress, 
+      currentSessionAddress, 
+      match: signerAddress === currentSessionAddress
+    });
+    
+    if (signerAddress !== currentSessionAddress) {
+      throw new Error(`セッションキーのアドレスが一致しません。署名者: ${signerAddress}, 期待: ${currentSessionAddress}`);
+    }
+    
+    // トランザクションに署名して実行（非同期）
+    const signedTransaction = await tx.sign({ signer: currentSessionKeypair, client: suiClient });
+    
+    console.log("トランザクションに署名しました:", {
+      sender: currentSessionAddress,
+      signedTransactionType: typeof signedTransaction,
+      hasBytes: 'bytes' in signedTransaction,
+      hasSignature: 'signature' in signedTransaction,
+    });
+    
+    // 署名済みトランザクションを実行（非同期）
+    const result = await suiClient.executeTransactionBlock({
+      transactionBlock: signedTransaction.bytes,
+      signature: signedTransaction.signature,
+      options: {
+        showEffects: true,
+        showObjectChanges: true,
+        showEvents: true,
+      },
+    });
+    
+    console.log("カウントアップトランザクション結果:", result);
+    setSuccess(`カウントアップしました (${new Date().toLocaleTimeString()})`);
   };
 
   // レジストリからカウンターIDを取得（完全オンチェーンデータベース）
@@ -731,10 +745,12 @@ export default function SessionPage() {
               </div>
               <button
                 onClick={increment}
-                disabled={loading || !sessionKeypair || !counterId}
+                disabled={!sessionKeypair || !counterId}
                 className="w-full flex h-12 items-center justify-center rounded-full bg-orange-500 px-4 text-white transition-colors hover:bg-orange-600 disabled:opacity-50 text-lg font-semibold"
               >
-                {loading ? "処理中..." : "カウントアップ"}
+                {pendingRequests > 0
+                  ? `実行中... (${pendingRequests}件並列)`
+                  : "カウントアップ"}
               </button>
               {/* デバッグ情報 */}
               {(!sessionKeypair || !counterId) && (
@@ -752,6 +768,16 @@ export default function SessionPage() {
                       カウンターID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{counterId}</code>
                     </p>
                   )}
+                </div>
+              )}
+              {pendingRequests > 0 && (
+                <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2">
+                  <p>
+                    {pendingRequests} 件のリクエストが並列で実行中です
+                  </p>
+                  <p className="text-zinc-400 dark:text-zinc-600 mt-1">
+                    連打可能です。すべてのリクエストが並列で処理されます。
+                  </p>
                 </div>
               )}
             </div>
