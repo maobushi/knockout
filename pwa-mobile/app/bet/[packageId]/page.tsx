@@ -1,24 +1,20 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useMemo, useRef, use } from "react";
 import { useWallet } from "@suiet/wallet-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
-import { toSerializedSignature } from "@mysten/sui/cryptography";
-import { CONTRACT_CONFIG } from "../config/contract";
-import SuietConnectButton from "../components/SuietConnectButton";
+import SuietConnectButton from "../../components/SuietConnectButton";
 
-export default function SessionPage() {
-  const router = useRouter();
+export default function SessionPage({ params }: { params: Promise<{ packageId: string }> }) {
+  const { packageId } = use(params);
   const wallet = useWallet();
   const connected = !!wallet?.connected;
   const [sessionKeypair, setSessionKeypair] = useState<Ed25519Keypair | null>(null);
   const [sessionAddress, setSessionAddress] = useState<string>("");
   const [registryId, setRegistryId] = useState<string>("");
   const [counterId, setCounterId] = useState<string>("");
-  const [counterSessionAddress, setCounterSessionAddress] = useState<string>(""); // レジストリに登録されているセッションアドレス
   const [count, setCount] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [pendingRequests, setPendingRequests] = useState<number>(0); // 実行中のリクエスト数
@@ -35,23 +31,8 @@ export default function SessionPage() {
 
   // ウォレット未接続でもページを表示する（接続を促すメッセージを表示）
 
-  // 初回マウント時に古いlocalStorageデータをクリーンアップし、セッションキーを自動生成
+  // 初回マウント時にセッションキーを自動生成
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      // 古いセッションキーのデータが残っている場合は削除
-      const oldSessionKey = localStorage.getItem("sessionSecretKey");
-      if (oldSessionKey) {
-        console.log("古いセッションキーのデータをクリーンアップします（セキュリティのため）");
-        localStorage.removeItem("sessionSecretKey");
-      }
-      // 古いcounterSessionAddressデータも削除
-      const oldCounterSessionAddress = localStorage.getItem("counterSessionAddress");
-      if (oldCounterSessionAddress) {
-        console.log("古いcounterSessionAddressデータをクリーンアップします");
-        localStorage.removeItem("counterSessionAddress");
-      }
-    }
-
     // セッションキーを自動生成（初回マウント時）
     try {
       // 既にセッションキーが生成されている場合はスキップ
@@ -128,7 +109,7 @@ export default function SessionPage() {
       const tx = new Transaction();
       
       tx.moveCall({
-        target: `${CONTRACT_CONFIG.PACKAGE_ID}::knockout_contract::create_and_share_registry`,
+        target: `${packageId}::knockout_contract::create_and_share_registry`,
         arguments: [tx.pure.address(sessionAddress)],
       });
 
@@ -203,8 +184,6 @@ export default function SessionPage() {
         setCounterId(foundCounterId);
         setCount(0);
         await fetchCounter(foundCounterId);
-        // レジストリに登録されているセッションアドレスをメモリに保存
-        setCounterSessionAddress(sessionAddress);
       } else {
         console.warn("カウンターIDが見つからなかったため、レジストリからの再取得を試みます");
         setTimeout(async () => {
@@ -246,7 +225,7 @@ export default function SessionPage() {
     setPendingRequests(pendingRequestsRef.current);
 
     // 並列で即座に実行（awaitしない）
-    executeIncrement(counterId, sessionAddress, sessionKeypair)
+    executeIncrement(counterId, sessionAddress, sessionKeypair, packageId)
       .then(() => {
         console.log("カウントアップ成功");
       })
@@ -280,7 +259,8 @@ export default function SessionPage() {
   const executeIncrement = async (
     currentCounterId: string,
     currentSessionAddress: string,
-    currentSessionKeypair: Ed25519Keypair
+    currentSessionKeypair: Ed25519Keypair,
+    currentPackageId: string
   ) => {
     console.log("カウントアップ実行開始:", { currentCounterId, currentSessionAddress });
     
@@ -321,7 +301,7 @@ export default function SessionPage() {
     tx.setSender(currentSessionAddress);
     
     tx.moveCall({
-      target: `${CONTRACT_CONFIG.PACKAGE_ID}::knockout_contract::increment`,
+      target: `${currentPackageId}::knockout_contract::increment`,
       arguments: [
         tx.object(currentCounterId), // sharedオブジェクトとして参照
       ],
@@ -391,7 +371,7 @@ export default function SessionPage() {
       // 最近のトランザクションからCounterCreatedイベントを検索
       const events = await suiClient.queryEvents({
         query: {
-          MoveEventType: `${CONTRACT_CONFIG.PACKAGE_ID}::knockout_contract::CounterCreated`,
+          MoveEventType: `${packageId}::knockout_contract::CounterCreated`,
         },
         limit: 10,
         order: "descending",
@@ -619,10 +599,6 @@ export default function SessionPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex min-h-screen w-full max-w-3xl flex-col items-center gap-8 py-10 px-6 bg-white dark:bg-black">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
-          セッションキーテスト
-        </h1>
-
         {/* ウォレット接続ボタン */}
         <div className="w-full flex justify-center">
           <SuietConnectButton />
@@ -654,21 +630,6 @@ export default function SessionPage() {
         {success && (
           <div className="w-full rounded-lg bg-green-50 border border-green-200 p-4 text-green-700 dark:bg-green-900/20 dark:border-green-800 dark:text-green-400">
             {success}
-          </div>
-        )}
-
-        {/* セッションアドレス表示 */}
-        {sessionAddress && (
-          <div className="w-full rounded-lg border border-black/[.12] p-4 dark:border-white/[.2]">
-            <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">
-              セッションアドレス
-            </h2>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{sessionAddress}</code>
-            </p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-2">
-              セッションキーは自動生成されました（ページをリロードすると新しいキーが生成されます）
-            </p>
           </div>
         )}
 
@@ -758,16 +719,6 @@ export default function SessionPage() {
                   <p>
                     ボタンが無効な理由: {!sessionKeypair ? "セッションキーなし " : ""} {!counterId ? "カウンターIDなし" : ""}
                   </p>
-                  {sessionKeypair && (
-                    <p>
-                      セッションキー: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{sessionAddress}</code>
-                    </p>
-                  )}
-                  {counterId && (
-                    <p>
-                      カウンターID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{counterId}</code>
-                    </p>
-                  )}
                 </div>
               )}
               {pendingRequests > 0 && (
@@ -790,8 +741,7 @@ export default function SessionPage() {
             設定情報
           </h2>
           <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-            <p>パッケージID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{CONTRACT_CONFIG.PACKAGE_ID}</code></p>
-            <p>メインアドレス: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{wallet?.account?.address || "未接続"}</code></p>
+            <p>パッケージID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{packageId}</code></p>
           </div>
         </div>
       </main>
