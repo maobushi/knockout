@@ -1,12 +1,12 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { Suspense, useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWallet } from "@suiet/wallet-kit";
 import { useHaptic } from "use-haptic";
 
-export default function TeamPage() {
+function TeamPageContent() {
   const router = useRouter();
   const params = useSearchParams();
   const wallet = useWallet();
@@ -33,7 +33,6 @@ export default function TeamPage() {
   const choose = (team: "A" | "B") => {
     if (seat == null) return;
     try {
-      // @ts-expect-error web vibration api
       if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate?.([50, 30, 50]);
       else triggerHaptic();
     } catch {
@@ -69,4 +68,10 @@ export default function TeamPage() {
   );
 }
 
- 
+export default function TeamPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
+      <TeamPageContent />
+    </Suspense>
+  );
+}

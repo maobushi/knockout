@@ -24,7 +24,6 @@ export default function SeatPage() {
 
   const handleSelect = (seat: number) => {
     try {
-      // @ts-expect-error web vibration api
       if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate?.([50, 30, 50]);
       else triggerHaptic();
     } catch {

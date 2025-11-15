@@ -111,8 +111,8 @@ module knockout_contract::knockout_contract {
     ) {
         let sender = tx_context::sender(ctx);
         
-        // セッションキーで署名されているかチェック
-        assert!(sender == counter.session_owner, E_NOT_AUTHORIZED);
+        // セッションキー または メインウォレットで署名されているかチェック
+        assert!(sender == counter.session_owner || sender == counter.main_owner, E_NOT_AUTHORIZED);
 
         let old_value = counter.value;
         counter.value = counter.value + 1;

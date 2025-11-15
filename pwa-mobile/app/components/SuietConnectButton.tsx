@@ -61,24 +61,7 @@ export default function SuietConnectButton() {
   }
 
   if (connected) {
-    return (
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-zinc-700 dark:text-zinc-300">
-          {account?.address
-            ? `${account.address.slice(0, 6)}...${account.address.slice(-4)}`
-            : "Connected"}
-        </span>
-        <button
-          onClick={() => {
-            haptic()
-            disconnect?.()
-          }}
-          className="flex h-12 items-center justify-center rounded-full border border-solid border-black/[.12] px-5 transition-colors hover:border-transparent hover:bg-black/[.05] dark:border-white/[.2] dark:hover:bg-[#1a1a1a]"
-        >
-          Disconnect
-        </button>
-      </div>
-    )
+    return null
   }
 
   return (

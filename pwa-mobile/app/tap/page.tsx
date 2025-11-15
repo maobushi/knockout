@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWallet } from "@suiet/wallet-kit";
 import { useHaptic } from "use-haptic";
@@ -18,7 +18,7 @@ const LEVERAGE_BASE =
     ? Number(process.env.NEXT_PUBLIC_LEVERAGE_BASE)
     : DEFAULT_BASE;
 
-export default function TapPage() {
+function TapPageContent() {
   const router = useRouter();
   const params = useSearchParams();
   const wallet = useWallet();
@@ -58,7 +58,6 @@ export default function TapPage() {
       if (typeof navigator !== "undefined" && "vibrate" in navigator) {
         // Vibration pattern 1: short-pause-short
         // Reference: Progressier Vibration API patterns
-        // @ts-expect-error web vibration api
         navigator.vibrate?.([50, 30, 50]);
         return;
       }
@@ -149,6 +148,14 @@ export default function TapPage() {
         </p>
       </main>
     </div>
+  );
+}
+
+export default function TapPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
+      <TapPageContent />
+    </Suspense>
   );
 }
 
