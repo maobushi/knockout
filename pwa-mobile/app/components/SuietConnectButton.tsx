@@ -3,10 +3,22 @@
 import { useMemo, useState } from "react"
 import { useWallet } from "@suiet/wallet-kit"
 import { AllDefaultWallets, PresetWallet } from "@suiet/wallet-sdk"
+import { useHaptic } from "use-haptic"
 
 export default function SuietConnectButton() {
-  const { connected, account, select, disconnect } = useWallet() as any
+  const { connected, account, select, disconnect } = useWallet()!
   const [open, setOpen] = useState(false)
+  const { triggerHaptic } = useHaptic()
+  const haptic = () => {
+    try {
+      if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate?.([50, 30, 50])
+      else triggerHaptic()
+    } catch {
+      try {
+        triggerHaptic()
+      } catch {}
+    }
+  }
   const walletOptions = useMemo(() => {
     // Use default wallet presets from SDK
     const seen = new Set<string>()
@@ -39,13 +51,13 @@ export default function SuietConnectButton() {
           await select?.(n)
           setOpen(false)
           return
-        } catch (e) {
+        } catch {
           // try next
         }
       }
       console.warn("No matching wallet adapter found for: ", names)
       setOpen(false)
-    } catch (e) {}
+    } catch {}
   }
 
   if (connected) {
@@ -57,7 +69,10 @@ export default function SuietConnectButton() {
             : "Connected"}
         </span>
         <button
-          onClick={() => disconnect?.()}
+          onClick={() => {
+            haptic()
+            disconnect?.()
+          }}
           className="flex h-12 items-center justify-center rounded-full border border-solid border-black/[.12] px-5 transition-colors hover:border-transparent hover:bg-black/[.05] dark:border-white/[.2] dark:hover:bg-[#1a1a1a]"
         >
           Disconnect
@@ -69,7 +84,10 @@ export default function SuietConnectButton() {
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          haptic()
+          setOpen((v) => !v)
+        }}
         className="flex h-12 items-center justify-center gap-2 rounded-full bg-black px-5 text-white transition-colors hover:bg-[#383838] dark:bg-white dark:text-black dark:hover:bg-[#e5e5e5]"
       >
         Select Wallet
@@ -80,7 +98,10 @@ export default function SuietConnectButton() {
             {walletOptions.map((w) => (
               <li key={w.name}>
                 <button
-                  onClick={() => trySelect(w.name)}
+                  onClick={() => {
+                    haptic()
+                    trySelect(w.name)
+                  }}
                   className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-black/[.04] dark:hover:bg-[#1a1a1a]"
                 >
                   <span className="text-sm">{w.label || w.name}</span>

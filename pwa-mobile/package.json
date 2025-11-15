@@ -13,7 +13,8 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "@suiet/wallet-kit": "^0.5.1",
-    "@mysten/sui": "^1.18.0"
+    "@mysten/sui": "^1.18.0",
+    "use-haptic": "*"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
