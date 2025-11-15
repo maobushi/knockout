@@ -12,7 +12,7 @@ const suiClient = new SuiClient({
 });
 
 // 最後に取得したイベントのカーソルを保存（簡易版：メモリに保存）
-let lastCursor: string | null = null;
+let lastCursor: any = null;
 
 export async function GET() {
   try {
@@ -23,7 +23,7 @@ export async function GET() {
       },
       limit: 50,
       order: "descending",
-      cursor: lastCursor || undefined,
+      ...(lastCursor ? { cursor: lastCursor as any } : {}),
     });
 
     const processedEvents: Array<{
