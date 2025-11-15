@@ -65,7 +65,7 @@ export default function SuietConnectButton() {
   }
 
   return (
-    <div className="relative">
+    <div className="relative z-50">
       <button
         onClick={() => {
           haptic()
@@ -76,7 +76,7 @@ export default function SuietConnectButton() {
         Select Wallet
       </button>
       {open ? (
-        <div className="absolute z-10 mt-2 w-64 rounded-2xl border border-black/10 bg-white p-2 shadow-lg dark:border-white/15 dark:bg-black">
+        <div className="absolute z-[100] mt-2 w-64 rounded-2xl border border-black/10 bg-white p-2 shadow-2xl dark:border-white/15 dark:bg-black">
           <ul className="max-h-80 overflow-auto">
             {walletOptions.map((w) => (
               <li key={w.name}>

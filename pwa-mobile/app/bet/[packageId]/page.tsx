@@ -659,8 +659,10 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
       <main className="flex min-h-screen w-full max-w-4xl flex-col items-center justify-center gap-12 py-10 px-6">
         {/* ウォレット接続ボタン */}
         {!connected && (
-          <div className="w-full flex justify-center mb-8">
-            <SuietConnectButton />
+          <div className="w-full flex justify-center mb-8 relative z-50">
+            <div className="relative z-50">
+              <SuietConnectButton />
+            </div>
           </div>
         )}
 
