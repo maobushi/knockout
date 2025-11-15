@@ -2,21 +2,11 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useWallet } from "@suiet/wallet-kit";
 import SuietConnectButton from "./components/SuietConnectButton";
 
 export default function Home() {
-  const router = useRouter();
   const wallet = useWallet();
-  const connected = !!wallet?.connected;
-
-  useEffect(() => {
-    if (connected) {
-      router.replace("/seat");
-    }
-  }, [connected]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
