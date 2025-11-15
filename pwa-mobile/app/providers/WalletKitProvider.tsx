@@ -9,7 +9,15 @@ export default function WalletKitProvider({
 }: {
   children: React.ReactNode
 }) {
-  return <WalletProvider defaultWallets={AllDefaultWallets}>{children}</WalletProvider>
+  return (
+    <WalletProvider
+      defaultWallets={AllDefaultWallets}
+      // モバイル対応のための設定
+      autoConnect={false}
+    >
+      {children}
+    </WalletProvider>
+  );
 }
 
 

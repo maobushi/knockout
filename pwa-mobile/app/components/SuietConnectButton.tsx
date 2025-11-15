@@ -46,18 +46,30 @@ export default function SuietConnectButton() {
             // fall back to all presets
             ...walletOptions.map((w) => w.name),
           ]
+      
+      // モバイル環境の検出
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      
       for (const n of candidates) {
         try {
+          // select関数を呼び出す前に少し待機（モバイルでのDeep Link処理を確実にするため）
+          if (isMobile) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          
           await select?.(n)
           setOpen(false)
           return
-        } catch {
+        } catch (error) {
+          console.warn(`Failed to select wallet ${n}:`, error);
           // try next
         }
       }
       console.warn("No matching wallet adapter found for: ", names)
       setOpen(false)
-    } catch {}
+    } catch (error) {
+      console.error("Error in trySelect:", error);
+    }
   }
 
   if (connected) {
@@ -81,9 +93,20 @@ export default function SuietConnectButton() {
             {walletOptions.map((w) => (
               <li key={w.name}>
                 <button
-                  onClick={() => {
-                    haptic()
-                    trySelect(w.name)
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    haptic();
+                    // モバイル環境では、ユーザーインタラクションから直接Deep Linkを開く
+                    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                    if (isMobile) {
+                      // モバイルでは、少し待機してからselectを呼び出す（Deep Link処理を確実にするため）
+                      setTimeout(() => {
+                        trySelect(w.name);
+                      }, 50);
+                    } else {
+                      await trySelect(w.name);
+                    }
                   }}
                   className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-black/[.04] dark:hover:bg-[#1a1a1a]"
                 >
