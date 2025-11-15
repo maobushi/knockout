@@ -5,7 +5,7 @@ import { useWallet } from "@suiet/wallet-kit";
 import { useRouter } from "next/navigation";
 import SuietConnectButton from "./components/SuietConnectButton";
 
-const PACKAGE_ID = "0x1e701597cd0a438700a4bef1f8d63fea1917beed78a59353769e01e790fb83f3";
+const PACKAGE_ID = "0x0836352492611ee7a2483819ee57091d81ac66024379339570d3a96c203e7eac";
 
 function shortenAddress(address: string, startLength = 6, endLength = 4): string {
   if (address.length <= startLength + endLength) return address;

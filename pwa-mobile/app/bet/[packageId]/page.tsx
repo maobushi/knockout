@@ -350,6 +350,10 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
   const increment = async (counterIdToUse: string, sessionAddressToUse: string, packageIdToUse: string) => {
     // 連打可能にするため、ローディング状態は設定せず、非同期で処理
     try {
+      // ランダムなseat（0-19）とteam（0または1）を生成
+      const seat = Math.floor(Math.random() * 20); // 0-19
+      const team = Math.floor(Math.random() * 2); // 0または1
+      
       // APIエンドポイントを呼び出してセッションキーで署名
       const response = await fetch("/api/increment", {
         method: "POST",
@@ -360,6 +364,8 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
           counterId: counterIdToUse,
           sessionAddress: sessionAddressToUse,
           packageId: packageIdToUse,
+          seat,
+          team,
         }),
       });
 

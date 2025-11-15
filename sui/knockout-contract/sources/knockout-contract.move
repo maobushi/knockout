@@ -13,6 +13,8 @@ module knockout_contract::knockout_contract {
         main_owner: address,      // メインウォレットのアドレス
         session_owner: address,   // セッションキーのアドレス
         value: u64,
+        seat: u8,                 // 座席番号（0-19）
+        team: u8,                 // チーム番号（0または1）
     }
 
     /// カウンターレジストリ（main_ownerでインデックス）
@@ -34,6 +36,8 @@ module knockout_contract::knockout_contract {
         counter_id: ID,
         old_value: u64,
         new_value: u64,
+        seat: u8,                 // 座席番号（0-19）
+        team: u8,                 // チーム番号（0または1）
     }
 
     /// 権限エラー
@@ -78,6 +82,8 @@ module knockout_contract::knockout_contract {
             main_owner,
             session_owner,
             value: 0,
+            seat: 0,               // 初期値は0
+            team: 0,              // 初期値は0
         };
 
         let counter_id = object::id(&counter);
@@ -105,8 +111,12 @@ module knockout_contract::knockout_contract {
     }
 
     /// カウンターの値を増やす（セッションキーで署名して実行）
+    /// seat: 座席番号（0-19）
+    /// team: チーム番号（0または1）
     public entry fun increment(
         counter: &mut Counter,
+        seat: u8,
+        team: u8,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
@@ -116,11 +126,15 @@ module knockout_contract::knockout_contract {
 
         let old_value = counter.value;
         counter.value = counter.value + 1;
+        counter.seat = seat;
+        counter.team = team;
         
         event::emit(CounterIncremented {
             counter_id: object::id(counter),
             old_value,
             new_value: counter.value,
+            seat,
+            team,
         });
     }
 
@@ -143,5 +157,15 @@ module knockout_contract::knockout_contract {
     /// セッションオーナーのアドレスを取得
     public fun session_owner(counter: &Counter): address {
         counter.session_owner
+    }
+
+    /// 座席番号を取得
+    public fun seat(counter: &Counter): u8 {
+        counter.seat
+    }
+
+    /// チーム番号を取得
+    public fun team(counter: &Counter): u8 {
+        counter.team
     }
 }
