@@ -1,11 +1,18 @@
 "use client";
 
-import { useEffect, useState, useMemo, use } from "react";
+import { useEffect, useState, useMemo, use, useCallback, useRef } from "react";
 import { useWallet } from "@suiet/wallet-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
+import { useHaptic } from "use-haptic";
 import SuietConnectButton from "../../components/SuietConnectButton";
+
+declare global {
+  interface Window {
+    webkitAudioContext?: typeof AudioContext;
+  }
+}
 
 export default function SessionPage({ params }: { params: Promise<{ packageId: string }> }) {
   const { packageId } = use(params);
@@ -19,6 +26,8 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const { triggerHaptic } = useHaptic();
 
   // Suiクライアントを初期化（testnetに固定 - パッケージがtestnetにデプロイされているため）
   const suiClient = useMemo(() => {
@@ -193,6 +202,66 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
     }
   };
 
+  // 振動パターン（tapページと同様の実装）
+  const vibratePattern1 = useCallback(() => {
+    try {
+      if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+        // Vibration pattern 1: short-pause-short
+        // Reference: Progressier Vibration API patterns
+        navigator.vibrate?.([50, 30, 50]);
+        return;
+      }
+    } catch {
+      // fall through to audio fallback
+    }
+    // Try library-based haptic (Safari 18+ input[switch] trick)
+    try {
+      triggerHaptic();
+      return;
+    } catch {
+      // fall through to audio fallback
+    }
+    // iOS Safari fallback: use a very short, low-volume audio buzz to emulate haptic
+    try {
+      if (typeof window === "undefined") return;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new Ctx();
+      }
+      const ctx = audioCtxRef.current!;
+      if (ctx.state === "suspended") {
+        // resume on user gesture
+        void ctx.resume();
+      }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      // low frequency square to mimic a buzz
+      osc.type = "square";
+      osc.frequency.value = 100;
+      gain.gain.value = 0.0001; // start almost silent
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const now = ctx.currentTime;
+      osc.start(now);
+      // Envelope ~60-80ms total, quick rise/fall
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.02, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+      osc.stop(now + 0.08);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } catch {
+          // noop
+        }
+      };
+    } catch {
+      // noop
+    }
+  }, [triggerHaptic]);
+
   // カウントアップ（セッションキーで署名）- API経由で実行（連打可能）
   const increment = async () => {
     if (!sessionAddress) {
@@ -204,6 +273,9 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
       setError("レジストリとカウンターを作成してください");
       return;
     }
+
+    // 振動をトリガー
+    vibratePattern1();
 
     // 連打可能にするため、ローディング状態は設定せず、非同期で処理
     (async () => {
