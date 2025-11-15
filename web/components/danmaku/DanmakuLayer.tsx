@@ -1,11 +1,11 @@
 "use client";
 import { Text } from "@react-three/drei";
 import { useEffect, useRef, useState } from "react";
-import { getSocket } from "@/lib/socket-client";
 import type { EventMessage } from "@/types/events";
 import { seatAddressToWorld, SEAT_SIZE } from "@/components/Stands";
 import { useControlsStore } from "@/lib/controlsStore";
 import { useSeatHighlightStore } from "@/lib/seatHighlightStore";
+import { useDanmakuEventStore } from "@/lib/danmakuEventStore";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 
@@ -130,6 +130,7 @@ export function DanmakuLayer() {
   const defaultColor = useControlsStore((s) => s.danmakuColor);
   const maxCount = useControlsStore((s) => s.danmakuMaxCount);
   const highlightSeat = useSeatHighlightStore((s) => s.highlightSeat);
+  const { events, clearEvents } = useDanmakuEventStore();
 
   const [items, setItems] = useState<DanmakuItem[]>([]);
   const itemsRef = useRef(items);
@@ -191,9 +192,12 @@ export function DanmakuLayer() {
     };
   }
 
+  // Zustandストアからイベントを読み取る（WebSocketの代わり）
   useEffect(() => {
-    const socket = getSocket();
-    const onEvent = (msg: EventMessage) => {
+    if (events.length === 0) return;
+
+    // 新しいイベントを処理
+    for (const msg of events) {
       const key = seatKeyOf(msg.seat);
       // すでに当該席で稼働中の直方体があればキューへ
       const actives = activeBySeatRef.current.get(key);
@@ -201,7 +205,7 @@ export function DanmakuLayer() {
         const q = queueBySeatRef.current.get(key) ?? [];
         q.push(msg);
         queueBySeatRef.current.set(key, q);
-        return;
+        continue;
       }
       // アクティブが無ければ即スポーン
       const item = spawnFromMessage(msg);
@@ -211,12 +215,11 @@ export function DanmakuLayer() {
         if (next.length > maxCount) next.shift();
         return next;
       });
-    };
-    socket.on("event", onEvent);
-    return () => {
-      socket.off("event", onEvent);
-    };
-  }, [defaultColor, defaultFont, defaultSpeed, defaultTTL, maxCount, highlightSeat]);
+    }
+
+    // 処理したイベントをクリア
+    clearEvents();
+  }, [events, defaultColor, defaultFont, defaultSpeed, defaultTTL, maxCount, highlightSeat, clearEvents]);
 
   // 近傍波及を生成（関数宣言でホイスティング可能に）
   function triggerWaveFromSeat(seatKey: string, colorHex: string) {
