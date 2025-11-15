@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getCounterObjects, CounterObject, saveCounterId, saveRegistryId, getRegistryId } from '@/lib/sui';
-import { suiClient, PACKAGE_ID } from '@/lib/sui';
+import { CounterObject, saveCounterId, saveRegistryId, getRegistryId, PACKAGE_ID } from '@/lib/sui';
 
 export default function CounterList() {
   const [counters, setCounters] = useState<CounterObject[]>([]);
@@ -13,21 +12,6 @@ export default function CounterList() {
   const [showRegistryForm, setShowRegistryForm] = useState(false);
   const [newRegistryId, setNewRegistryId] = useState('');
 
-  // カウンターオブジェクトを取得
-  const fetchCounters = async () => {
-    try {
-      setLoading(true);
-      const data = await getCounterObjects();
-      setCounters(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch counters');
-      console.error('Error fetching counters:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // レジストリIDを監視
   const [registryId, setRegistryIdState] = useState<string | null>(null);
 
@@ -36,25 +20,7 @@ export default function CounterList() {
     setRegistryIdState(currentRegistryId);
   }, []);
 
-  // 初回読み込み
-  useEffect(() => {
-    fetchCounters();
-  }, []);
-
-  // 定期的にカウンターを更新（レジストリが設定されていない場合のフォールバック）
-  // 注意: レジストリが設定されている場合は、gRPCストリーミングでリアルタイム更新されるため不要
-  useEffect(() => {
-    const currentRegistryId = getRegistryId();
-    // レジストリが設定されていない場合のみ、定期的に更新（間隔を長くする）
-    if (!currentRegistryId) {
-      const interval = setInterval(() => {
-        console.log('Periodic counter refresh (no registry)...');
-        fetchCounters();
-      }, 10000); // 10秒ごとに更新（3秒から延長）
-
-      return () => clearInterval(interval);
-    }
-  }, [registryId]);
+  // 初回のfetchは削除（JSON RPCポーリングのみ使用）
 
   // 最新のカウンターIDセットを保持するref
   const countersRef = useRef<Set<string>>(new Set());
@@ -64,44 +30,46 @@ export default function CounterList() {
     countersRef.current = new Set(counters.map(c => c.objectId));
   }, [counters]);
 
-  // gRPCストリーミングでレジストリの変更を監視（リアルタイム）
+  // JSON RPCポーリングでレジストリの変更を監視（リアルタイム）
   useEffect(() => {
     let unsubscribeRegistry: (() => void) | null = null;
-    let fallbackInterval: NodeJS.Timeout | null = null;
     let isMounted = true;
 
     if (!registryId) return;
 
     const setupRegistrySubscription = async () => {
       try {
-        const { subscribeToRegistryChanges } = await import('@/lib/sui');
+        const { subscribeToRegistryChanges, getCounterIdsFromRegistry, getCounterById } = await import('@/lib/sui');
         
-        // レジストリオブジェクトの変更をgRPCストリーミングで監視
+        // レジストリオブジェクトの変更をJSON RPCポーリングで監視
         unsubscribeRegistry = subscribeToRegistryChanges(registryId, async () => {
           if (!isMounted) return;
-          console.log('Registry changed detected via gRPC, refreshing counters...');
-          await fetchCounters();
+          console.log('Registry changed detected via JSON RPC polling, fetching new counters...');
+          
+          // レジストリから新しいカウンターIDを取得
+          const newIds = await getCounterIdsFromRegistry(registryId);
+          
+          // 新しいカウンターを取得して追加
+          for (const counterId of newIds) {
+            const counter = await getCounterById(counterId);
+            if (counter) {
+              setCounters(prev => {
+                if (prev.some(c => c.objectId === counterId)) {
+                  // 既に存在する場合は更新
+                  return prev.map(c => c.objectId === counterId ? counter : c);
+                }
+                // 新規追加
+                const updated = [...prev, counter];
+                return updated.sort((a, b) => parseInt(b.version) - parseInt(a.version));
+              });
+            }
+          }
         });
       } catch (error) {
         console.error('Error setting up registry subscription:', error);
         console.error('Error details:', error);
-        // フォールバック: ポーリング（間隔を長くする）
-        console.warn('Falling back to polling for registry');
-        fallbackInterval = setInterval(async () => {
-          if (!isMounted) return;
-          try {
-            const { suiClient } = await import('@/lib/sui');
-            const registry = await suiClient.getObject({
-              id: registryId,
-              options: { showContent: false },
-            });
-            if (registry.data) {
-              await fetchCounters();
-            }
-          } catch (err) {
-            console.error('Error in registry polling:', err);
-          }
-        }, 5000); // 5秒ごとにポーリング（2秒から延長）
+        setError(`JSON RPC polling setup failed: ${error instanceof Error ? error.message : String(error)}`);
+        setLoading(false);
       }
     };
 
@@ -112,20 +80,18 @@ export default function CounterList() {
       if (unsubscribeRegistry) {
         unsubscribeRegistry();
       }
-      if (fallbackInterval) {
-        clearInterval(fallbackInterval);
-      }
     };
   }, [registryId]);
 
-  // gRPCストリーミングでリアルタイム更新
+  // JSON RPCポーリングでリアルタイム更新（ポーリングのみで状態を取得）
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let isMounted = true;
 
     const setupSubscription = async () => {
       try {
-        const { subscribeToCounterEvents, getCounterById, getCounterObjects } = await import('@/lib/sui');
+        setLoading(true);
+        const { subscribeToCounterEvents, getCounterById } = await import('@/lib/sui');
 
         // カウンター作成時のコールバック
         const handleCounterCreated = async (counterId: string) => {
@@ -144,6 +110,7 @@ export default function CounterList() {
               return updated.sort((a, b) => parseInt(b.version) - parseInt(a.version));
             });
           }
+          setLoading(false);
         };
 
         // カウンター増加時のコールバック
@@ -162,28 +129,18 @@ export default function CounterList() {
           }
         };
 
-        // gRPCストリーミングでイベントを購読
+        // JSON RPCポーリングでイベントを購読
         unsubscribe = subscribeToCounterEvents(
           handleCounterCreated,
           handleCounterIncremented
         );
+        
+        // ポーリングが開始されたらloadingをfalseに
+        setLoading(false);
       } catch (error) {
         console.error('Error setting up event subscription:', error);
-        // フォールバック: ポーリングに戻る（間隔を長くする）
-        console.warn('Falling back to polling');
-        const fallbackInterval = setInterval(async () => {
-          if (!isMounted) return;
-          try {
-            console.log('Polling for counter updates...');
-            await fetchCounters();
-          } catch (err) {
-            console.error('Error in fallback polling:', err);
-          }
-        }, 5000); // 5秒ごとにポーリング（2秒から延長）
-
-        return () => {
-          clearInterval(fallbackInterval);
-        };
+        setError(`JSON RPC polling setup failed: ${error instanceof Error ? error.message : String(error)}`);
+        setLoading(false);
       }
     };
 
@@ -209,12 +166,6 @@ export default function CounterList() {
     return (
       <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
         <p className="text-red-800">エラー: {error}</p>
-        <button
-          onClick={fetchCounters}
-          className="mt-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-        >
-          再試行
-        </button>
       </div>
     );
   }
@@ -249,9 +200,24 @@ export default function CounterList() {
               最新のカウンターID: 0x3734edcfdb267450fb19d498c2677b61fd6a0822bd5d16348db0777cb6ba79b6
             </p>
             <button
-              onClick={() => {
-                saveCounterId('0x3734edcfdb267450fb19d498c2677b61fd6a0822bd5d16348db0777cb6ba79b6');
-                fetchCounters();
+              onClick={async () => {
+                try {
+                  const { getCounterById } = await import('@/lib/sui');
+                  const counterId = '0x3734edcfdb267450fb19d498c2677b61fd6a0822bd5d16348db0777cb6ba79b6';
+                  const counter = await getCounterById(counterId);
+                  if (counter) {
+                    setCounters(prev => {
+                      if (prev.some(c => c.objectId === counterId)) {
+                        return prev;
+                      }
+                      const updated = [...prev, counter];
+                      return updated.sort((a, b) => parseInt(b.version) - parseInt(a.version));
+                    });
+                    saveCounterId(counterId);
+                  }
+                } catch (error) {
+                  setError(`カウンターの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
+                }
               }}
               className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
             >
@@ -263,12 +229,28 @@ export default function CounterList() {
     );
   }
 
-  const handleAddCounter = () => {
+  const handleAddCounter = async () => {
     if (newCounterId.trim()) {
-      saveCounterId(newCounterId.trim());
-      setNewCounterId('');
-      setShowAddForm(false);
-      fetchCounters();
+      try {
+        const { getCounterById } = await import('@/lib/sui');
+        const counter = await getCounterById(newCounterId.trim());
+        if (counter) {
+          setCounters(prev => {
+            if (prev.some(c => c.objectId === counter.objectId)) {
+              return prev;
+            }
+            const updated = [...prev, counter];
+            return updated.sort((a, b) => parseInt(b.version) - parseInt(a.version));
+          });
+          saveCounterId(newCounterId.trim());
+          setNewCounterId('');
+          setShowAddForm(false);
+        } else {
+          setError('カウンターが見つかりませんでした');
+        }
+      } catch (error) {
+        setError(`カウンターの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   };
 
@@ -278,7 +260,7 @@ export default function CounterList() {
       setRegistryIdState(newRegistryId.trim());
       setNewRegistryId('');
       setShowRegistryForm(false);
-      fetchCounters();
+      // fetchCounters()は削除（JSON RPCポーリングで監視するため）
     }
   };
 
@@ -298,12 +280,6 @@ export default function CounterList() {
             className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
           >
             {showAddForm ? 'キャンセル' : 'カウンターを追加'}
-          </button>
-          <button
-            onClick={fetchCounters}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            更新
           </button>
         </div>
       </div>
