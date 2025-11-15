@@ -48,3 +48,41 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 3. On the home page, use the “Connect” button (powered by Suiet Kit) to connect Sui wallets.
 
 Docs: https://kit.suiet.app/docs/QuickStart/
+
+## セッションキーテストページ
+
+セッションキーを使用したカウンターコントラクトのテストページが `/session` にあります。
+
+### セットアップ
+
+1. コントラクトをデプロイ:
+   ```bash
+   cd ../sui/knockout-contract
+   sui move build
+   sui client publish --gas-budget 100000000
+   ```
+
+2. パッケージIDを設定:
+   - デプロイ後、パッケージIDが表示されます
+   - `.env.local` ファイルを作成して以下を設定:
+     ```
+     NEXT_PUBLIC_PACKAGE_ID=0x<パッケージID>
+     ```
+   - または `app/config/contract.ts` を直接編集
+
+3. 開発サーバーを起動:
+   ```bash
+   bun dev
+   ```
+
+4. ブラウザで `/session` にアクセス
+
+### 使用方法
+
+1. **ウォレット接続**: ホームページでウォレットを接続
+2. **セッションキー生成**: 「セッションキーを生成」ボタンをクリック
+3. **レジストリ作成**: 「レジストリを作成」ボタンをクリック（メインウォレットで署名）
+4. **カウンター初期化**: 「カウンターを初期化」ボタンをクリック（メインウォレットで署名）
+5. **カウントアップ**: 「カウントアップ」ボタンをクリック（セッションキーで自動署名）
+
+セッションキーで署名されたトランザクションは、ポップアップなしで自動的に実行されます。

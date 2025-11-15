@@ -7,24 +7,26 @@ module knockout_contract::knockout_contract {
     use sui::event;
     use sui::table::{Self, Table};
 
-    /// カウンターオブジェクト
+    /// カウンターオブジェクト（セッションキー対応）
     struct Counter has key {
         id: UID,
+        main_owner: address,      // メインウォレットのアドレス
+        session_owner: address,   // セッションキーのアドレス
         value: u64,
     }
 
-    /// カウンターレジストリ（すべてのカウンターIDを管理）
+    /// カウンターレジストリ（main_ownerでインデックス）
     struct CounterRegistry has key {
         id: UID,
-        counters: Table<u64, ID>, // インデックス -> カウンターID
-        next_index: u64,
+        counters: Table<address, ID>, // main_owner -> カウンターID
     }
 
     /// カウンター作成イベント
     struct CounterCreated has copy, drop {
         counter_id: ID,
+        main_owner: address,
+        session_owner: address,
         value: u64,
-        index: u64,
     }
 
     /// カウンター増加イベント
@@ -34,74 +36,84 @@ module knockout_contract::knockout_contract {
         new_value: u64,
     }
 
-    /// レジストリが存在しない場合のエラー
-    const ERegistryNotFound: u64 = 0;
+    /// 権限エラー
+    const E_NOT_AUTHORIZED: u64 = 1;
+    /// カウンターが存在しないエラー
+    const E_COUNTER_NOT_FOUND: u64 = 2;
 
     /// カウンターレジストリを作成する（一度だけ実行）
     public fun create_registry(ctx: &mut TxContext): CounterRegistry {
         CounterRegistry {
             id: object::new(ctx),
             counters: table::new(ctx),
-            next_index: 0,
         }
     }
 
-    /// レジストリを共有オブジェクトとして作成
-    public entry fun create_and_share_registry(ctx: &mut TxContext) {
-        transfer::share_object(create_registry(ctx));
+    /// レジストリを共有オブジェクトとして作成し、即時にカウンターを発行
+    /// session_owner で署名するトランザクションに対応するアドレスを登録する
+    public entry fun create_and_share_registry(session_owner: address, ctx: &mut TxContext) {
+        let registry = create_registry(ctx);
+        {
+            let registry_ref = &mut registry;
+            create_or_replace_counter(registry_ref, session_owner, ctx);
+        };
+        transfer::share_object(registry);
     }
 
-    /// 新しいカウンターを作成してレジストリに登録
-    public entry fun create_and_register(
+    /// 新しいカウンターを作成してレジストリに登録（共通処理）
+    fun create_or_replace_counter(
         registry: &mut CounterRegistry,
-        ctx: &mut TxContext
+        session_owner: address,
+        ctx: &mut TxContext,
     ) {
+        let main_owner = tx_context::sender(ctx);
+
+        // 既存エントリを削除（必要であれば）
+        if (table::contains(&registry.counters, main_owner)) {
+            let _old_counter_id = table::remove(&mut registry.counters, main_owner);
+        };
+
         let counter = Counter {
             id: object::new(ctx),
+            main_owner,
+            session_owner,
             value: 0,
         };
-        
+
         let counter_id = object::id(&counter);
-        let index = registry.next_index;
-        
-        // レジストリに登録
-        table::add(&mut registry.counters, index, counter_id);
-        registry.next_index = registry.next_index + 1;
-        
-        // イベントを発行
+        table::add(&mut registry.counters, main_owner, counter_id);
+
         event::emit(CounterCreated {
             counter_id,
+            main_owner,
+            session_owner,
             value: 0,
-            index,
         });
-        
-        // カウンターを共有オブジェクトとして作成
+
         transfer::share_object(counter);
     }
 
-    /// 新しいカウンターを作成する（レジストリなし、後方互換性のため）
-    public fun create(ctx: &mut TxContext): Counter {
-        let counter = Counter {
-            id: object::new(ctx),
-            value: 0,
-        };
-        
-        event::emit(CounterCreated {
-            counter_id: object::id(&counter),
-            value: 0,
-            index: 0, // レジストリなしの場合は0
-        });
-        
-        counter
+    /// カウンターを初期化（メインウォレットで実行）
+    /// セッションキーのアドレスを紐づけてカウンターを発行
+    /// 既存のカウンターが存在する場合は、レジストリから削除してから新しいカウンターを作成
+    public entry fun initialize_counter(
+        registry: &mut CounterRegistry,
+        session_owner: address,
+        ctx: &mut TxContext
+    ) {
+        create_or_replace_counter(registry, session_owner, ctx);
     }
 
-    /// カウンターを取得可能なオブジェクトとして作成する（レジストリなし）
-    public entry fun create_and_share(ctx: &mut TxContext) {
-        transfer::share_object(create(ctx));
-    }
+    /// カウンターの値を増やす（セッションキーで署名して実行）
+    public entry fun increment(
+        counter: &mut Counter,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        
+        // セッションキーで署名されているかチェック
+        assert!(sender == counter.session_owner, E_NOT_AUTHORIZED);
 
-    /// カウンターの値を増やす
-    public entry fun increment(counter: &mut Counter) {
         let old_value = counter.value;
         counter.value = counter.value + 1;
         
@@ -117,13 +129,19 @@ module knockout_contract::knockout_contract {
         counter.value
     }
 
-    /// レジストリ内のカウンター数を取得
-    public fun registry_size(registry: &CounterRegistry): u64 {
-        registry.next_index
+    /// カウンターを取得（main_ownerで検索）
+    public fun get_counter_id(registry: &CounterRegistry, main_owner: address): ID {
+        assert!(table::contains(&registry.counters, main_owner), E_COUNTER_NOT_FOUND);
+        *table::borrow(&registry.counters, main_owner)
     }
 
-    /// レジストリからカウンターIDを取得（インデックス指定）
-    public fun get_counter_id(registry: &CounterRegistry, index: u64): ID {
-        *table::borrow(&registry.counters, index)
+    /// メインオーナーのアドレスを取得
+    public fun main_owner(counter: &Counter): address {
+        counter.main_owner
+    }
+
+    /// セッションオーナーのアドレスを取得
+    public fun session_owner(counter: &Counter): address {
+        counter.session_owner
     }
 }
