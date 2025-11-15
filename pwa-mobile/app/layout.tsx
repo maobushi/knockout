@@ -17,12 +17,6 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "KNOCKOUT - TAP. WIN. DOMINATE.",
   description: "The ultimate on-chain tapping battle. Every tap counts. Every second matters.",
-  viewport: {
-    width: "device-width",
-    initialScale: 1,
-    maximumScale: 1,
-    userScalable: false,
-  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -30,6 +24,13 @@ export const metadata: Metadata = {
   formatDetection: {
     telephone: false,
   },
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
