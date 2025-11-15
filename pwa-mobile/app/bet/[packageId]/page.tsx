@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef, use } from "react";
+import { useEffect, useState, useMemo, use } from "react";
 import { useWallet } from "@suiet/wallet-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -17,8 +17,6 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
   const [counterId, setCounterId] = useState<string>("");
   const [count, setCount] = useState<number>(0);
   const [loading, setLoading] = useState(false);
-  const [pendingRequests, setPendingRequests] = useState<number>(0); // 実行中のリクエスト数
-  const pendingRequestsRef = useRef<number>(0); // 実行中のリクエスト数（実際の管理用）
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
 
@@ -31,7 +29,7 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
 
   // ウォレット未接続でもページを表示する（接続を促すメッセージを表示）
 
-  // 初回マウント時にセッションキーを自動生成
+  // 初回マウント時にセッションキーを自動生成し、cookieに保存
   useEffect(() => {
     // セッションキーを自動生成（初回マウント時）
     try {
@@ -43,50 +41,33 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
       setSessionKeypair(keypair);
       setSessionAddress(address);
       
-      // セキュリティのため、セッションキーはメモリにのみ保存（localStorageには保存しない）
-      // ページをリロードすると新しいセッションキーが自動生成される
-      
-      console.log("セッションキーを自動生成しました:", address);
+      // 秘密鍵をcookieに保存（脆弱性を理解した上での実装）
+      // Ed25519Keypair#getSecretKey は "suiprivkey" で始まる文字列を返す
+      const secretKeyString = keypair.getSecretKey();
+
+      // デバッグ: getSecretKey() の返り値を簡易出力
+      console.log("getSecretKey() の返り値:", {
+        type: typeof secretKeyString,
+        length: secretKeyString.length,
+        preview: secretKeyString.slice(0, 20),
+      });
+
+      // cookieに保存（HttpOnlyはfalseにして、JavaScriptからアクセス可能にする）
+      // クライアント → API でそのまま round-trip できるよう、URLエンコードのみ行う
+      const encodedValue = encodeURIComponent(secretKeyString);
+      document.cookie = `session_secret_key=${encodedValue}; path=/; max-age=86400; SameSite=Lax`;
+
+      console.log("cookie保存完了:", {
+        encodedValueLength: encodedValue.length,
+        cookieValue: document.cookie.substring(0, 100),
+      });
+
+      console.log("セッションキーを自動生成し、cookieに保存しました:", address);
     } catch (err) {
       setError(`セッションキー生成エラー: ${err}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 初回マウント時のみ実行
-
-  // メインウォレットからセッションキーにSUIを送金（テスト用）
-  const sendGasToSessionKey = async () => {
-    if (!wallet || !connected || !sessionAddress) {
-      setError("ウォレットが接続されていないか、セッションキーが生成されていません");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setSuccess("");
-
-    try {
-      const tx = new Transaction();
-      
-      // セッションキーに0.01 SUIを送金（テスト用、ガス代として十分）
-      const [coin] = tx.splitCoins(tx.gas, [10_000_000]); // 0.01 SUI (10_000_000 MIST)
-      tx.transferObjects([coin], sessionAddress);
-
-      const result = await wallet.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
-        options: {
-          showEffects: true,
-          showObjectChanges: true,
-        },
-      });
-
-      console.log("ガス送金トランザクション結果:", result);
-      setSuccess(`セッションキーに0.01 SUIを送金しました`);
-    } catch (err: any) {
-      setError(`ガス送金エラー: ${err.message || err}`);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // レジストリとカウンターを同時に作成
   const createRegistry = async () => {
@@ -113,8 +94,12 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
         arguments: [tx.pure.address(sessionAddress)],
       });
 
+      // 同一トランザクション内でセッションキーへガスを少額転送（0.01 SUI）
+      const [coin] = tx.splitCoins(tx.gas, [10_000_000]); // 10_000_000 MIST = 0.01 SUI
+      tx.transferObjects([coin], sessionAddress);
+
       const result = await wallet.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
+        transactionBlock: tx as any,
         options: {
           showEffects: true,
           showObjectChanges: true,
@@ -208,10 +193,10 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
     }
   };
 
-  // カウントアップ（セッションキーで署名）- 並列処理対応
-  const increment = () => {
-    if (!sessionKeypair) {
-      setError("セッションキーを生成してください");
+  // カウントアップ（セッションキーで署名）- API経由で実行（連打可能）
+  const increment = async () => {
+    if (!sessionAddress) {
+      setError("セッションキーが生成されていません");
       return;
     }
 
@@ -220,128 +205,45 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
       return;
     }
 
-    // 実行中のリクエスト数を増やす
-    pendingRequestsRef.current += 1;
-    setPendingRequests(pendingRequestsRef.current);
+    // 連打可能にするため、ローディング状態は設定せず、非同期で処理
+    (async () => {
+      try {
+        // APIエンドポイントを呼び出してセッションキーで署名
+        const response = await fetch("/api/increment", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            counterId,
+            sessionAddress,
+            packageId,
+          }),
+        });
 
-    // 並列で即座に実行（awaitしない）
-    executeIncrement(counterId, sessionAddress, sessionKeypair, packageId)
-      .then(() => {
-        console.log("カウントアップ成功");
-      })
-      .catch((err: any) => {
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "カウントアップに失敗しました");
+        }
+
+        console.log("カウントアップ成功:", data);
+        
+        // カウンターの状態を更新（少し遅延させて確実に反映）
+        setTimeout(async () => {
+          await fetchCounter(counterId);
+        }, 500);
+      } catch (err: any) {
         console.error("カウントアップ処理エラー:", err);
-        // ガス不足エラーの場合のみエラーメッセージを表示
-        if (err.message?.includes("No valid gas coins") || err.message?.includes("gas")) {
-          setError(
-            `ガス不足エラー: セッションキーのアドレス（${sessionAddress}）にSUIがありません。\n` +
-            `上記の「セッションキーに0.01 SUIを送金」ボタンを押して、メインウォレットからセッションキーにガスを送金してください。\n` +
-            `（本番環境では、スポンサードトランザクションを実装してください）`
-          );
-        }
-      })
-      .finally(() => {
-        // 実行中のリクエスト数を減らす
-        pendingRequestsRef.current = Math.max(0, pendingRequestsRef.current - 1);
-        setPendingRequests(pendingRequestsRef.current);
-        
-        // すべてのリクエストが完了したら、カウントを更新
-        if (pendingRequestsRef.current === 0 && counterId) {
-          setTimeout(async () => {
-            await fetchCounter(counterId);
-            console.log("すべてのカウントアップが完了し、カウンター状態を更新しました");
-          }, 1000);
-        }
-      });
-  };
-
-  // 実際のカウントアップ処理を実行
-  const executeIncrement = async (
-    currentCounterId: string,
-    currentSessionAddress: string,
-    currentSessionKeypair: Ed25519Keypair,
-    currentPackageId: string
-  ) => {
-    console.log("カウントアップ実行開始:", { currentCounterId, currentSessionAddress });
-    
-    // まずカウンターオブジェクトを取得して、session_ownerを確認
-    let expectedSessionOwner: string | null = null;
-    try {
-      const counterObject = await suiClient.getObject({
-        id: currentCounterId,
-        options: { showContent: true },
-      });
-      
-      if (counterObject.data?.content && "fields" in counterObject.data.content) {
-        const fields = counterObject.data.content.fields as any;
-        expectedSessionOwner = fields.session_owner;
-        console.log("カウンターのsession_owner:", expectedSessionOwner);
-        console.log("現在のセッションアドレス:", currentSessionAddress);
-        
-        if (expectedSessionOwner !== currentSessionAddress) {
-          // セッションキーが一致しない場合、警告を表示
-          setError(
-            `⚠️ セッションキーのアドレスが一致しません。\n` +
-            `レジストリに登録されているセッションキー: ${expectedSessionOwner}\n` +
-            `現在のセッションキー: ${currentSessionAddress}\n` +
-            `\n解決方法:\n` +
-            `「2. レジストリ作成（再作成）」を実行して、新しいセッションキーを登録してください。`
-          );
-          throw new Error("セッションキーのアドレスが一致しません");
+        const errorMessage = err.message || err.error || "トランザクションの実行に失敗しました";
+        // エラーは表示するが、連打を妨げない
+        if (errorMessage.includes("Object") && errorMessage.includes("locked")) {
+          setError("オブジェクトロックで失敗しました。少し待って再度お試しください。");
+        } else {
+          setError(`カウントアップエラー: ${errorMessage}`);
         }
       }
-    } catch (err) {
-      console.error("カウンターオブジェクトの取得エラー:", err);
-      throw err;
-    }
-
-    const tx = new Transaction();
-    
-    // セッションキーのアドレスをsenderとして設定
-    tx.setSender(currentSessionAddress);
-    
-    tx.moveCall({
-      target: `${currentPackageId}::knockout_contract::increment`,
-      arguments: [
-        tx.object(currentCounterId), // sharedオブジェクトとして参照
-      ],
-    });
-
-    // 署名者のアドレスを確認
-    const signerAddress = currentSessionKeypair.getPublicKey().toSuiAddress();
-    console.log("署名開始:", { 
-      signerAddress, 
-      currentSessionAddress, 
-      match: signerAddress === currentSessionAddress
-    });
-    
-    if (signerAddress !== currentSessionAddress) {
-      throw new Error(`セッションキーのアドレスが一致しません。署名者: ${signerAddress}, 期待: ${currentSessionAddress}`);
-    }
-    
-    // トランザクションに署名して実行（非同期）
-    const signedTransaction = await tx.sign({ signer: currentSessionKeypair, client: suiClient });
-    
-    console.log("トランザクションに署名しました:", {
-      sender: currentSessionAddress,
-      signedTransactionType: typeof signedTransaction,
-      hasBytes: 'bytes' in signedTransaction,
-      hasSignature: 'signature' in signedTransaction,
-    });
-    
-    // 署名済みトランザクションを実行（非同期）
-    const result = await suiClient.executeTransactionBlock({
-      transactionBlock: signedTransaction.bytes,
-      signature: signedTransaction.signature,
-      options: {
-        showEffects: true,
-        showObjectChanges: true,
-        showEvents: true,
-      },
-    });
-    
-    console.log("カウントアップトランザクション結果:", result);
-    setSuccess(`カウントアップしました (${new Date().toLocaleTimeString()})`);
+    })();
   };
 
   // レジストリからカウンターIDを取得（完全オンチェーンデータベース）
@@ -379,15 +281,15 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
 
       for (const event of events.data) {
         try {
-          if (event.parsedJson) {
-            const parsed = event.parsedJson as { counter_id?: string; main_owner?: string };
+            if (event.parsedJson) {
+            const parsed = event.parsedJson as { counter_id?: string | { id?: string | number }; main_owner?: string };
             if (parsed.counter_id && parsed.main_owner === wallet.account.address) {
               // IDを文字列に変換
               let id: string;
               if (typeof parsed.counter_id === 'string') {
                 id = parsed.counter_id;
               } else if (parsed.counter_id && typeof parsed.counter_id === 'object' && 'id' in parsed.counter_id) {
-                id = String(parsed.counter_id.id);
+                id = String((parsed.counter_id as { id?: string | number }).id ?? '');
               } else {
                 continue;
               }
@@ -593,6 +495,13 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
   useEffect(() => {
     if (counterId) {
       fetchCounter(counterId);
+      
+      // 連打時の最新状態を反映するため、定期的にカウンターの状態を更新
+      const interval = setInterval(() => {
+        fetchCounter(counterId);
+      }, 2000); // 2秒ごとに更新
+      
+      return () => clearInterval(interval);
     }
   }, [counterId]);
 
@@ -674,30 +583,12 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
             )}
           </div>
 
-          {/* ガス送金セクション（テスト用） */}
-          {sessionAddress && (
-            <div className="rounded-lg border border-yellow-300 dark:border-yellow-700 p-4 bg-yellow-50 dark:bg-yellow-900/20">
-              <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">
-                2. ⚠️ テスト用: セッションキーにガスを送金
-              </h2>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
-                セッションキーでトランザクションを実行するには、ガス用のSUIが必要です。
-                メインウォレットからセッションキーに0.01 SUIを送金します。
-              </p>
-              <button
-                onClick={sendGasToSessionKey}
-                disabled={loading || !connected || !sessionAddress}
-                className="flex h-10 items-center justify-center rounded-full bg-yellow-500 px-4 text-white transition-colors hover:bg-yellow-600 disabled:opacity-50"
-              >
-                {loading ? "送金中..." : "セッションキーに0.01 SUIを送金"}
-              </button>
-            </div>
-          )}
+          {/* ガス送金セクションは不要（メインウォレットでガスを支払う運用に変更） */}
 
           {/* カウントアップセクション */}
           <div className="rounded-lg border border-black/[.12] p-4 dark:border-white/[.2]">
             <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">
-              3. カウントアップ（セッションキーで署名）
+              2. カウントアップ（セッションキーで署名）
             </h2>
             <div className="space-y-4">
               <div className="text-center">
@@ -706,42 +597,20 @@ export default function SessionPage({ params }: { params: Promise<{ packageId: s
               </div>
               <button
                 onClick={increment}
-                disabled={!sessionKeypair || !counterId}
+                disabled={!sessionAddress || !counterId}
                 className="w-full flex h-12 items-center justify-center rounded-full bg-orange-500 px-4 text-white transition-colors hover:bg-orange-600 disabled:opacity-50 text-lg font-semibold"
               >
-                {pendingRequests > 0
-                  ? `実行中... (${pendingRequests}件並列)`
-                  : "カウントアップ"}
+                カウントアップ
               </button>
               {/* デバッグ情報 */}
-              {(!sessionKeypair || !counterId) && (
+              {(!sessionAddress || !counterId) && (
                 <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2 space-y-1">
                   <p>
-                    ボタンが無効な理由: {!sessionKeypair ? "セッションキーなし " : ""} {!counterId ? "カウンターIDなし" : ""}
-                  </p>
-                </div>
-              )}
-              {pendingRequests > 0 && (
-                <div className="text-xs text-zinc-500 dark:text-zinc-500 mt-2">
-                  <p>
-                    {pendingRequests} 件のリクエストが並列で実行中です
-                  </p>
-                  <p className="text-zinc-400 dark:text-zinc-600 mt-1">
-                    連打可能です。すべてのリクエストが並列で処理されます。
+                    ボタンが無効な理由: {!sessionAddress ? "セッションキーなし " : ""} {!counterId ? "カウンターIDなし" : ""}
                   </p>
                 </div>
               )}
             </div>
-          </div>
-        </div>
-
-        {/* 設定情報 */}
-        <div className="w-full rounded-lg border border-black/[.12] p-4 dark:border-white/[.2]">
-          <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">
-            設定情報
-          </h2>
-          <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-            <p>パッケージID: <code className="bg-zinc-100 dark:bg-zinc-900 px-2 py-1 rounded">{packageId}</code></p>
           </div>
         </div>
       </main>
